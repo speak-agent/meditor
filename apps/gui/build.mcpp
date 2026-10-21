@@ -2,7 +2,16 @@
 // Copyright (C) 2026 Sunrisepeak & mcpp-community
 import mcpp;
 import huxerui.rules;
+import std;
 int main() {
+    const auto os = std::string_view(mcpp::target_os());
+    const auto environment = std::string_view(mcpp::target_env());
+    // Desktop applications inherit these files from the native CLI artifact.
+    if (os == "android" || environment == "android" || os == "ios" || os == "emscripten") {
+        const auto root = std::filesystem::path(mcpp::manifest_dir()) / "../..";
+        mcpp::deploy((root / "LICENSE").string().c_str(), "licenses/meditor");
+        mcpp::deploy((root / "LICENSING.md").string().c_str(), "licenses/meditor");
+    }
     return huxerui::rules::configure({
         .target = "meditor-gui",
         .sources = {"src/app.cppm", "../../modules/ui/workbench.cppm", "../../modules/ui/workbench.cpp", "../../modules/ui/editor.cppm", "../../modules/ui/editor.cpp"},

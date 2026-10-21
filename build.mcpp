@@ -7,6 +7,8 @@ import meditor.distribution;
 int main() {
     try {
         const auto root = std::filesystem::path(mcpp::manifest_dir());
+        mcpp::deploy((root / "LICENSE").string().c_str(), "licenses/meditor");
+        mcpp::deploy((root / "LICENSING.md").string().c_str(), "licenses/meditor");
         const auto target = meditor::distribution::payload_target(mcpp::target_arch(), mcpp::target_os(), mcpp::target_env());
         if (target.empty()) return 0;
         const auto directory = root / "target/payloads";

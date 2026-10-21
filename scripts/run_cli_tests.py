@@ -20,6 +20,10 @@ for name in (["meditor"] if args.native_tools else ["meditor", "meditor-test-too
     if not candidates:
         raise SystemExit(f"Missing built target: {name}")
     binaries[name] = max(candidates, key=lambda p: p.stat().st_mtime)
+for license_name in ["LICENSE", "LICENSING.md"]:
+    installed = binaries["meditor"].parent / "licenses/meditor" / license_name
+    if not installed.is_file() or installed.read_bytes() != (root / license_name).read_bytes():
+        raise SystemExit("Native CLI project license deployment is missing or changed: " + license_name)
 command = [sys.executable, str(root / ("scripts/test_native_tools.py" if args.native_tools else "scripts/test_cli.py")), "--binary", str(binaries["meditor"])]
 if not args.native_tools:
     command += ["--fixture", str(binaries["meditor-test-tool"])]

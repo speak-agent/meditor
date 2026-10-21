@@ -44,6 +44,11 @@ def main():
         if not candidates:
             raise SystemExit("Missing native GUI target")
         binary = max(candidates, key=lambda p: p.stat().st_mtime).resolve()
+    project_root = Path(__file__).resolve().parents[1]
+    for license_name in ["LICENSE", "LICENSING.md"]:
+        installed = binary.parent / "licenses/meditor" / license_name
+        if not installed.is_file() or installed.read_bytes() != (project_root / license_name).read_bytes():
+            raise RuntimeError("Native GUI project license deployment is missing or changed: " + license_name)
     def library(name):
         soname = ctypes.util.find_library(name)
         if not soname:
