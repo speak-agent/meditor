@@ -19,7 +19,7 @@ PayloadPlan plan(const std::filesystem::path& directory, std::string_view target
     if (std::filesystem::file_size(result.receipt) > 32 * 1024 * 1024) throw std::runtime_error("Tool inventory exceeds its limit");
     std::ifstream input(result.receipt);
     auto receipt = nlohmann::json::parse(input);
-    if (receipt.at("schemaVersion") != 1 || receipt.at("target") != target || !receipt.at("files").is_array()) throw std::runtime_error("Tool inventory does not match this target");
+    if (receipt.at("schemaVersion") != 1 || receipt.at("target").get<std::string>() != target || !receipt.at("files").is_array()) throw std::runtime_error("Tool inventory does not match this target");
     if (receipt.at("files").size() > 100000) throw std::runtime_error("Tool inventory contains too many files");
     auto base = std::filesystem::weakly_canonical(directory);
     std::set<std::string> destinations;
