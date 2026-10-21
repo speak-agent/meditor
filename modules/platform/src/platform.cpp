@@ -9,6 +9,8 @@ module;
 #include <sys/poll.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <cerrno>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -18,6 +20,37 @@ module meditor.platform;
 import std;
 
 namespace meditor {
+struct FileLock::Impl {
+#if defined(_WIN32)
+    HANDLE file {INVALID_HANDLE_VALUE};
+    ~Impl() { if (file != INVALID_HANDLE_VALUE) CloseHandle(file); }
+#elif !defined(__EMSCRIPTEN__)
+    int file {-1};
+    ~Impl() { if (file >= 0) close(file); }
+#endif
+};
+FileLock::FileLock(const std::filesystem::path& path) : impl_(std::make_unique<Impl>()) {
+#if defined(__EMSCRIPTEN__)
+    throw std::runtime_error("File locking requires a native storage adapter");
+#elif defined(_WIN32)
+    impl_->file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (impl_->file == INVALID_HANDLE_VALUE) throw std::runtime_error("Could not open the file lock");
+    BY_HANDLE_FILE_INFORMATION info {};
+    if (!GetFileInformationByHandle(impl_->file, &info) || (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)))
+        throw std::runtime_error("File lock must be a regular file");
+    OVERLAPPED position {};
+    if (!LockFileEx(impl_->file, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &position))
+        throw std::runtime_error("File lock is busy; retry the operation");
+#else
+    impl_->file = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (impl_->file < 0) throw std::runtime_error("Could not open the file lock");
+    struct stat info {};
+    if (fstat(impl_->file, &info) || !S_ISREG(info.st_mode)) throw std::runtime_error("File lock must be a regular file");
+    if (flock(impl_->file, LOCK_EX | LOCK_NB)) throw std::runtime_error("File lock is busy; retry the operation");
+#endif
+}
+FileLock::~FileLock() = default;
 struct Process::Impl {
 #if defined(_WIN32)
     HANDLE process {}, input {}, output {}, job {};
@@ -218,6 +251,38 @@ std::filesystem::path executable_directory() {
     std::uint32_t size {}; _NSGetExecutablePath(nullptr, &size); std::string path(size, '\0'); if (!_NSGetExecutablePath(path.data(), &size)) return std::filesystem::weakly_canonical(path.c_str()).parent_path();
 #endif
     return {};
+}
+std::filesystem::path user_config_directory() {
+#if defined(_WIN32)
+    auto environmentPath = [](const wchar_t* name) {
+        const auto size = GetEnvironmentVariableW(name, nullptr, 0);
+        if (!size) return std::filesystem::path{};
+        std::wstring value(size, L'\0');
+        const auto count = GetEnvironmentVariableW(name, value.data(), size);
+        if (!count || count >= size) return std::filesystem::path{};
+        value.resize(count); std::filesystem::path path(value);
+        return path.is_absolute() ? path : std::filesystem::path{};
+    };
+    auto base = environmentPath(L"APPDATA");
+    if (base.empty()) { base = environmentPath(L"USERPROFILE"); if (!base.empty()) base /= "AppData/Roaming"; }
+    return base;
+#elif defined(__EMSCRIPTEN__)
+    return {};
+#else
+    auto environmentPath = [](const char* name) {
+        auto value = std::getenv(name);
+        if (!value || !*value) return std::filesystem::path{};
+        auto path = std::filesystem::u8path(value);
+        return path.is_absolute() ? path : std::filesystem::path{};
+    };
+#if defined(__APPLE__)
+    auto base = environmentPath("HOME"); if (!base.empty()) base /= "Library/Application Support";
+#else
+    auto base = environmentPath("XDG_CONFIG_HOME");
+    if (base.empty()) { base = environmentPath("HOME"); if (!base.empty()) base /= ".config"; }
+#endif
+    return base;
+#endif
 }
 std::string redact(std::string text, const std::filesystem::path& workspace) {
     auto replace = [&](std::string_view source, std::string_view target) {

@@ -9,9 +9,12 @@ using namespace huxerui;
 namespace {
 std::filesystem::path initialWorkspace;
 std::filesystem::path initialTools;
+std::filesystem::path initialSettings;
 std::string initialDocument;
 struct WorkspaceModel {
     std::shared_ptr<meditor::Application> application;
+    std::shared_ptr<meditor::Application> preferences;
+    std::filesystem::path settingsFile;
     std::vector<std::string> files;
     std::map<std::string, std::shared_ptr<EditorState>> editors;
     std::vector<std::string> tabs;
@@ -22,10 +25,18 @@ struct WorkspaceModel {
     bool selected {};
     bool busy {};
     bool dark {true};
+    bool reducedMotion {};
+    bool settingsOpen {};
+    std::uint64_t settingsRevision {};
     bool navigation {true};
     std::optional<FileReference> grant;
+    void adopt_settings(const Json& state) {
+        settingsRevision = state.at("revision").get<std::uint64_t>();
+        dark = state.at("values").at("theme") == "dark";
+        reducedMotion = state.at("values").at("reducedMotion").get<bool>();
+    }
     void load(std::filesystem::path root) {
-        auto next = std::make_shared<meditor::Application>(root, initialTools);
+        auto next = std::make_shared<meditor::Application>(root, initialTools, settingsFile);
         auto response = next->execute({{"command", "workspace.files"}});
         files.clear(); if (response.value("ok", false)) for (const auto& file : response["data"]["files"]) files.push_back(file.get<std::string>());
         name = root.filename().string(); application = std::move(next); editors.clear(); tabs.clear(); active.clear(); selected = true;
@@ -38,6 +49,7 @@ void configure(int argc, char** argv) {
         std::string_view argument = argv[i];
         if (argument == "--workspace" && i + 1 < argc) initialWorkspace = argv[++i];
         else if (argument == "--tool-root" && i + 1 < argc) initialTools = argv[++i];
+        else if (argument == "--settings-file" && i + 1 < argc) initialSettings = argv[++i];
         else if (argument == "--open" && i + 1 < argc) initialDocument = argv[++i];
     }
 }
@@ -49,6 +61,7 @@ View workbench() {
         auto tasks = UseTaskScope();
         auto picker = UseService<FilePicker>();
         auto window = UseWindow();
+        auto host = UseApplication();
         auto transition = UseSceneTransition();
         auto compact = UseViewportClass() == ViewportClass::Compact;
         auto refresh = [epoch] { epoch += 1; };
@@ -77,7 +90,18 @@ View workbench() {
             if (!data->editors.contains(id)) { data->editors[id] = std::make_shared<EditorState>(data->application, id, refresh); data->tabs.push_back(id); }
             data->active = id; data->status = name; refresh();
         };
-        Lifecycle([data, refresh, open] {
+        Lifecycle([data, refresh, open, host] {
+            try {
+                data->settingsFile = initialSettings;
+#if defined(__ANDROID__)
+                if (data->settingsFile.empty()) data->settingsFile = std::filesystem::u8path(host.Directories().data_directory.Child("settings.json").Path());
+#endif
+                data->preferences = std::make_shared<meditor::Application>(std::filesystem::current_path(), initialTools, data->settingsFile);
+                auto settings = data->preferences->execute({{"command", "settings.get"}});
+                if (settings.value("ok", false)) {
+                    data->adopt_settings(settings["data"]);
+                } else data->status = settings["error"].value("message", "Settings unavailable");
+            } catch (...) { data->status = "Settings unavailable"; }
             if (!initialWorkspace.empty()) {
                 try {
                     data->load(initialWorkspace);
@@ -85,7 +109,36 @@ View workbench() {
                 } catch (...) { data->status = "Could not open the workspace"; }
                 refresh();
             }
+            refresh();
         });
+        auto updateSettings = [data, refresh](Json changes) {
+            if (!data->preferences) { data->status = "Settings unavailable"; refresh(); return; }
+            auto result = data->preferences->execute({{"command", "settings.update"}, {"params", {{"revision", data->settingsRevision}, {"changes", std::move(changes)}}}});
+            if (!result.value("ok", false)) {
+                data->status = result["error"].value("message", "Could not save settings");
+                if (result["error"].value("code", "") == "settings-conflict")
+                    result = data->preferences->execute({{"command", "settings.get"}});
+            }
+            if (result.value("ok", false)) {
+                data->adopt_settings(result["data"]);
+            }
+            refresh();
+        };
+        auto showSettings = [data, refresh] {
+            data->settingsOpen = !data->settingsOpen;
+            if (data->settingsOpen && data->preferences) {
+                auto result = data->preferences->execute({{"command", "settings.get"}});
+                if (result.value("ok", false)) data->adopt_settings(result["data"]);
+                else data->status = result["error"].value("message", "Could not load settings");
+            }
+            refresh();
+        };
+        auto toggleTheme = [data, updateSettings, transition] {
+            if (data->reducedMotion) { updateSettings({{"theme", data->dark ? "light" : "dark"}}); return; }
+            transition.Run(TransitionSpec{FadeTransition{}, TweenSpec{0.12}}, [data, updateSettings] {
+                updateSettings({{"theme", data->dark ? "light" : "dark"}});
+            });
+        };
         auto save = [data, run, refresh] {
             if (data->active.empty()) return;
             auto current = run("document.read", {{"document", data->active}});
@@ -132,9 +185,7 @@ View workbench() {
             Text("meditor", TextRole::Title),
             compact ? View(Spacer().With(Grow{1})) : View(Text(data->selected ? data->name : "C++ Modules, naturally.", TextRole::Label).With(Grow{1}, Foreground(muted))),
             Button(compact ? "Files" : "Explorer").OnClick([data, refresh] { data->navigation = !data->navigation; refresh(); }),
-            Button(data->dark ? "Light" : "Dark").OnClick([data, refresh, transition] {
-                transition.Run(TransitionSpec{FadeTransition{}, TweenSpec{0.12}}, [data, refresh] { data->dark = !data->dark; refresh(); });
-            }),
+            Button(data->dark ? "Light" : "Dark").OnClick(toggleTheme),
         }.Key("window-title-bar").With(Padding(12), Spacing(12), CrossAlign(CrossAxisAlignment::Center));
         View body;
         if (!data->selected) {
@@ -182,14 +233,30 @@ View workbench() {
             }.With(Grow{1}, CrossAlign(CrossAxisAlignment::Stretch));
             body = Row {data->navigation ? View(sidebar) : View{}, (!compact || !data->navigation) ? View(center) : View{}}.With(Grow{1}, CrossAlign(CrossAxisAlignment::Stretch));
         }
+        if (data->settingsOpen) {
+            body = ScrollView {Column {
+                Text("Settings", TextRole::Title).With(FontSize(24)),
+                Text("Appearance", TextRole::Title),
+                Text(data->dark ? "Theme: Dark" : "Theme: Light"),
+                Button(data->dark ? "Use light theme" : "Use dark theme").OnClick(toggleTheme),
+                Text(data->reducedMotion ? "Motion: Reduced" : "Motion: Standard"),
+                Button(data->reducedMotion ? "Allow motion" : "Reduce motion").Key("motion-setting").OnClick([data, updateSettings] { updateSettings({{"reducedMotion", !data->reducedMotion}}); }),
+                Text("Local preferences · meditor settings commands", TextRole::Label).With(Foreground(muted)),
+                Button("Back").OnClick([data, refresh] { data->settingsOpen = false; refresh(); }),
+            }.With(Padding(compact ? 20 : 32), Spacing(16), CrossAlign(CrossAxisAlignment::Start))}.Key("settings-panel").With(Grow{1});
+        }
         auto page = Column {header, Divider(), body,
-            Row {Text(data->status, TextRole::Label).With(Grow{1}), Text("C++23 · Modules", TextRole::Label).With(Foreground(muted))}.Key("status-bar").With(Padding(10), Background(pane))
+            Row {Text(data->status, TextRole::Label).With(Grow{1}),
+                compact ? View{} : View(Text("C++23 · Modules", TextRole::Label).With(Foreground(muted))),
+                Button("Settings").Key("settings-entry").OnClick(showSettings)
+            }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))
         }.With(Background(background), Foreground(ink), CrossAlign(CrossAxisAlignment::Stretch))
-            .On<ViewEvents::KeyIntercept>([save](const KeyEvent& event) {
+            .On<ViewEvents::KeyIntercept>([save, data, refresh](const KeyEvent& event) {
+                if (event.type == KeyEventType::Down && event.key == Key::Escape && data->settingsOpen) { data->settingsOpen = false; refresh(); return true; }
                 if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::S) { save(); return true; } return false;
             });
         auto theme = data->dark ? FlatDarkThemeSpec() : FlatLightThemeSpec();
-        theme.motion.reduced_motion = UseTheme().motion.reduced_motion;
+        theme.motion.reduced_motion = data->reducedMotion || UseTheme().motion.reduced_motion;
         return FlatTheme(theme, std::move(page));
     });
 }

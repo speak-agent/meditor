@@ -9,7 +9,7 @@ class Application {
     struct Impl;
     std::unique_ptr<Impl> impl_;
 public:
-    explicit Application(std::filesystem::path workspace = std::filesystem::current_path(), std::filesystem::path toolRoot = {});
+    explicit Application(std::filesystem::path workspace = std::filesystem::current_path(), std::filesystem::path toolRoot = {}, std::filesystem::path settingsFile = {});
     ~Application();
     Application(const Application&) = delete;
     Json execute(const Json& request);

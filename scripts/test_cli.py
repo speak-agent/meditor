@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -26,7 +27,8 @@ def main():
             target = tools / name / "bin" / (name + (".exe" if os.name == "nt" else ""))
             target.parent.mkdir(parents=True)
             shutil.copy2(fixture, target)
-        process = subprocess.Popen([str(binary), "serve", "--stdio", "--workspace", str(project), "--tool-root", str(tools)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        settings_file = root / "configuration/settings.json"
+        process = subprocess.Popen([str(binary), "serve", "--stdio", "--workspace", str(project), "--tool-root", str(tools), "--settings-file", str(settings_file)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
         sequence = 0
         def request(command, params=None, *, ok=True):
             nonlocal sequence
@@ -44,6 +46,34 @@ def main():
             assert request("document.open", {"path": "missing"}, ok=False)["code"] == "not-found"
             capabilities = request("capabilities")
             assert set(capabilities["commands"]) == set(capabilities["commandSchemas"])
+            settings = request("settings.get")
+            assert settings == {"revision": 0, "values": {"theme": "dark", "reducedMotion": False}}
+            updated = request("settings.update", {"revision": 0, "changes": {"theme": "light"}})
+            assert updated["revision"] == 1 and updated["values"]["theme"] == "light"
+            assert request("settings.update", {"revision": 0, "changes": {"theme": "dark"}}, ok=False)["code"] == "settings-conflict"
+            assert request("settings.update", {"revision": -1, "changes": {}}, ok=False)["code"] == "invalid-params"
+            assert request("settings.update", {"revision": 1, "changes": {"theme": "unknown"}}, ok=False)["code"] == "invalid-settings"
+            assert request("settings.update", {"revision": 1, "changes": {"unknown": True}}, ok=False)["code"] == "invalid-settings"
+            other = subprocess.run([str(binary), "settings.update", "--workspace", str(project), "--settings-file", str(settings_file), "--format", "json", "--params", json.dumps({"revision": 1, "changes": {"reducedMotion": True}})], capture_output=True, text=True, encoding="utf-8", timeout=15)
+            assert other.returncode == 0 and json.loads(other.stdout)["data"]["revision"] == 2
+            assert request("settings.get")["values"] == {"theme": "light", "reducedMotion": True}
+            racers = [subprocess.Popen([str(binary), "settings.update", "--workspace", str(project), "--settings-file", str(settings_file), "--format", "json", "--params", json.dumps({"revision": 2, "changes": changes})], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+                      for changes in [{"theme": "dark"}, {"reducedMotion": False}]]
+            race_replies = [json.loads(racer.communicate(timeout=15)[0]) for racer in racers]
+            assert sum(reply["ok"] for reply in race_replies) == 1
+            assert request("settings.get")["revision"] == 3
+            user_config = root / "配置 preferences"
+            environment = {**os.environ, "APPDATA": str(user_config), "XDG_CONFIG_HOME": str(user_config), "HOME": str(user_config)}
+            default_result = subprocess.run([str(binary), "settings.update", "--workspace", str(project), "--format", "json", "--params", json.dumps({"revision": 0, "changes": {"theme": "light"}})], env=environment, capture_output=True, text=True, encoding="utf-8", timeout=15)
+            assert default_result.returncode == 0 and json.loads(default_result.stdout)["data"]["revision"] == 1
+            default_file = (user_config / "Library/Application Support" if sys.platform == "darwin" else user_config) / "meditor/settings.json"
+            assert json.loads(default_file.read_text(encoding="utf-8"))["values"]["theme"] == "light"
+            intact = settings_file.read_bytes()
+            settings_file.write_bytes(b"invalid synthetic settings\n")
+            assert request("settings.get", ok=False)["code"] == "invalid-settings"
+            assert request("settings.update", {"revision": 2, "changes": {"theme": "dark"}}, ok=False)["code"] == "invalid-settings"
+            assert settings_file.read_bytes() == b"invalid synthetic settings\n"
+            settings_file.write_bytes(intact)
             assert request("document.open", {"path": "hello.cppm", "unexpected": True}, ok=False)["code"] == "invalid-params"
             assert request("workspace.trust", {"allow": "true"}, ok=False)["code"] == "invalid-params"
             document = request("document.open", {"path": "hello.cppm"})

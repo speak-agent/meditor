@@ -85,7 +85,7 @@ def main():
         original = "export module demo;\nexport int value() { return 42; }\n"
         source.write_bytes(original.encode())
         environment = os.environ.copy(); environment.update(GDK_BACKEND="x11", GSK_RENDERER="cairo")
-        process = subprocess.Popen([str(binary), "--workspace", str(root), "--open", "main.cppm"], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        process = subprocess.Popen([str(binary), "--workspace", str(root), "--open", "main.cppm", "--settings-file", str(root / "settings.json")], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         try:
             def find_window():
                 if process.poll() is not None:

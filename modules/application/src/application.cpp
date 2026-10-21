@@ -3,6 +3,7 @@ import std;
 import nlohmann.json;
 import meditor.document;
 import meditor.platform;
+import meditor.settings;
 
 namespace meditor {
 namespace {
@@ -138,6 +139,7 @@ struct Application::Impl {
     std::map<std::string, std::unique_ptr<Record>> documents;
     std::map<std::string, std::unique_ptr<Task>> tasks;
     std::unique_ptr<Language> language;
+    std::unique_ptr<SettingsStore> settings;
     bool trusted {};
     std::uint64_t nextDocument {1}, nextTask {1};
     std::filesystem::path resolve(std::string value) const {
@@ -218,6 +220,12 @@ struct Application::Impl {
         tasks.emplace(id, std::move(task)); return {{"task", id}, {"state", "running"}};
     }
     Json dispatch(const std::string& command, const Json& params) {
+        if (command == "settings.get") return settings->get();
+        if (command == "settings.update") {
+            if (!params.at("revision").is_number_unsigned() && params.at("revision").get<std::int64_t>() < 0)
+                throw CommandError("invalid-params", "Settings revision must be nonnegative");
+            return settings->update(params.at("revision").get<std::uint64_t>(), params.at("changes"));
+        }
         if (command == "workspace.status") {
             Json docs = Json::array(); for (const auto& [id, record] : documents) docs.push_back(summary(id, *record));
             return {{"name", root.filename().string()}, {"trusted", trusted}, {"documents", docs}, {"language", language ? language->status() : Json(nullptr)}};
@@ -317,22 +325,25 @@ struct Application::Impl {
         throw CommandError("unknown-command", "Command is not implemented; query capabilities");
     }
 };
-Application::Application(std::filesystem::path workspace, std::filesystem::path toolRoot) : impl_(std::make_unique<Impl>()) {
+Application::Application(std::filesystem::path workspace, std::filesystem::path toolRoot, std::filesystem::path settingsFile) : impl_(std::make_unique<Impl>()) {
     impl_->root = std::filesystem::weakly_canonical(workspace);
     if (!std::filesystem::is_directory(impl_->root)) throw std::runtime_error("Workspace directory does not exist");
     impl_->tools = toolRoot.empty() ? executable_directory() / "tools" : std::filesystem::absolute(toolRoot);
+    impl_->settings = std::make_unique<SettingsStore>(std::move(settingsFile));
 }
 Application::~Application() = default;
 std::string Application::session_id() const { return impl_->session; }
 Json Application::capabilities() const {
     Json commands = Json::array();
     for (auto name : {"capabilities", "workspace.status", "workspace.files", "workspace.trust", "document.open", "document.read", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
+    commands.push_back("settings.get"); commands.push_back("settings.update");
     Json schemas = Json::object();
     for (const auto& name : commands) {
         const auto command = name.get<std::string>();
         Json properties = Json::object(); Json required = Json::array();
         auto field = [&](std::string key, std::string type, bool needed = false) { properties[key] = {{"type", type}}; if (needed) required.push_back(key); };
-        if (command == "document.open") { field("path", "string", true); field("create", "boolean"); }
+        if (command == "settings.update") { field("revision", "integer", true); field("changes", "object", true); }
+        else if (command == "document.open") { field("path", "string", true); field("create", "boolean"); }
         else if (command.starts_with("document.") || command.starts_with("language.") || command.starts_with("modules.")) {
             if (command != "language.stop" && command != "language.diagnostics") field("document", "string", true);
             if (command == "document.edit" || command == "document.undo" || command == "document.redo" || command == "document.save") field("revision", "integer", true);
@@ -373,8 +384,10 @@ Json Application::execute(const Json& request) {
         response["ok"] = true;
         if (command == "document.edit" || command == "document.undo" || command == "document.redo") response["effects"].push_back("document-change");
         if (command == "document.save") response["effects"].push_back("file-write");
+        if (command == "settings.update") response["effects"].push_back("settings-change");
         if (response["data"].is_object() && response["data"].value("state", "") == "running") response["effects"].push_back("tool-execution");
     } catch (const CommandError& error) { response["ok"] = false; response["error"] = {{"code", error.code}, {"message", redact(error.what(), impl_->root)}}; }
+    catch (const SettingsError& error) { response["ok"] = false; response["error"] = {{"code", error.code}, {"message", error.what()}}; }
     catch (const nlohmann::json::exception&) { response["ok"] = false; response["error"] = {{"code", "invalid-params"}, {"message", "Missing or invalid command parameters"}}; }
     catch (const std::exception& error) { response["ok"] = false; response["error"] = {{"code", "operation-failed"}, {"message", redact(error.what(), impl_->root)}}; }
     return response;

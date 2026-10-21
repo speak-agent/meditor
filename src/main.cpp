@@ -28,24 +28,25 @@ RequestLine read_request_line(std::istream& input, std::string& line) {
 int main(int argc, char** argv) {
     using meditor::Json;
     try {
-        std::filesystem::path workspace = std::filesystem::current_path(), tools;
+        std::filesystem::path workspace = std::filesystem::current_path(), tools, settings;
         std::string command = "capabilities"; Json params = Json::object(); bool serve = false, json = false, trust = false;
         for (int i = 1; i < argc; ++i) {
             std::string arg = argv[i];
             auto next = [&]() -> std::string { if (++i >= argc) throw std::runtime_error("Option requires a value"); return argv[i]; };
             if (arg == "--workspace") workspace = next();
             else if (arg == "--tool-root") tools = next();
+            else if (arg == "--settings-file") settings = next();
             else if (arg == "--params") params = Json::parse(next());
             else if (arg == "--format") { if (next() != "json") throw std::runtime_error("Supported format: json"); json = true; }
             else if (arg == "--trust") trust = true;
             else if (arg == "--stdio") {}
             else if (arg == "--version") { std::println("meditor 0.0.1"); return 0; }
             else if (arg == "--help" || arg == "help") {
-                std::println("meditor 0.0.1\nUsage: meditor <command> [--workspace DIR] [--params JSON] [--format json]\n       meditor serve --stdio [--workspace DIR]\n\nUse capabilities to list commands. Commands share the GUI application core.\nTool execution requires --trust or an explicit workspace.trust request.\nDocument edits require the current revision. serve retains documents and tasks.\n--tool-root DIR selects a complete local tool payload for development."); return 0;
+                std::println("meditor 0.0.1\nUsage: meditor <command> [--workspace DIR] [--params JSON] [--format json]\n       meditor serve --stdio [--workspace DIR]\n\nUse capabilities to list commands. Commands share the GUI application core.\nTool execution requires --trust or an explicit workspace.trust request.\nDocument edits require the current revision. serve retains documents and tasks.\n--tool-root DIR selects a complete local tool payload for development.\nsettings.get and settings.update manage local preferences.\n--settings-file FILE selects an explicit preferences store."); return 0;
             } else if (arg.starts_with('-')) throw std::runtime_error("Unknown command option");
             else { command = arg; serve = command == "serve"; }
         }
-        meditor::Application application(workspace, tools);
+        meditor::Application application(workspace, tools, settings);
         if (trust) application.execute({{"command", "workspace.trust"}, {"params", {{"allow", true}}}});
         if (serve) {
             std::string line;
