@@ -10,6 +10,7 @@ Build the current CLI with [mcpp](https://github.com/mcpp-community/mcpp):
 
 ```sh
 mcpp build
+mcpp run -p meditor-gui -- --workspace .
 ```
 
 [Design and acceptance criteria](.agnets/docs/2026-10-22-meditor-project-design.md) · [Development rules](AGENTS.md)

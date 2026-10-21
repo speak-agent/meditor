@@ -1,0 +1,11 @@
+import mcpp;
+import huxerui.rules;
+int main() {
+    return huxerui::rules::configure({
+        .target = "meditor-gui",
+        .sources = {"src/app.cppm", "../../modules/ui/workbench.cppm", "../../modules/ui/workbench.cpp", "../../modules/ui/editor.cppm", "../../modules/ui/editor.cpp"},
+        .bundle_name = "meditor",
+        .bundle_identifier = "org.speakagent.meditor",
+        .installer = {.target = "meditor-gui", .version = "0.0.1", .upgrade_code = "81092ED7-605E-4435-B6A3-4DD04682CE21"},
+    }) ? 0 : 1;
+}

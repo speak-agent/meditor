@@ -1,0 +1,35 @@
+[package]
+name = "meditor-gui"
+version = "0.0.1"
+standard = "c++23"
+license = "MIT"
+platforms = ["linux", "windows", "macos", "android", "ios", "emscripten"]
+
+[dependencies]
+meditor-application = { path = "../../modules/application" }
+huxerui.huxerui = { git = "https://github.com/Sunrisepeak/HuxerUI.git", branch = "meditor" }
+
+[dependencies.nlohmann]
+json = "=3.12.0"
+
+[targets.meditor-gui]
+kind = "app"
+main = "src/main.cpp"
+windows_subsystem = "windows"
+
+[build]
+sources = []
+macos_deployment_target = "14.0"
+ios_deployment_target = "15.0"
+
+[target.'cfg(any(os = "macos", os = "ios"))'.dependencies]
+llvm.libcxx = "=22.1.8.3"
+
+[target.'cfg(os = "emscripten")'.abi]
+exceptions = true
+
+[target.x86_64-linux-android]
+min_api_level = 23
+
+[target.aarch64-linux-android]
+min_api_level = 23
