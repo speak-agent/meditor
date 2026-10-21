@@ -1,3 +1,8 @@
+#if defined(_WIN32)
+#include <io.h>
+#include <fcntl.h>
+#include <cstdio>
+#endif
 import std;
 import nlohmann.json;
 using Json = nlohmann::json;
@@ -5,6 +10,10 @@ void send(Json value) {
     auto body = value.dump(); std::print("Content-Length: {}\r\n\r\n{}", body.size(), body); std::cout.flush();
 }
 int main(int argc, char** argv) {
+#if defined(_WIN32)
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
     if (argc == 1) return 0;
     std::string mode = argv[1];
     if (mode == "sleep") { std::this_thread::sleep_for(std::chrono::seconds(60)); return 0; }
