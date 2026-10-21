@@ -223,7 +223,11 @@ struct Application::Impl {
         if (command == "workspace.trust") { trusted = params.at("allow").get<bool>(); if (!trusted) { for (auto& [id, task] : tasks) task->worker.request_stop(); language.reset(); for (auto& [id, record] : documents) record->synced = 0; } return {{"trusted", trusted}}; }
         if (command == "workspace.files") {
             Json result = Json::array(); std::error_code error;
-            for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, error), end; it != end && result.size() < 3000; it.increment(error)) {
+            auto has_entry = []<class Iterator>(const Iterator& iterator) {
+                if constexpr (requires { iterator != std::default_sentinel; }) return iterator != std::default_sentinel;
+                else return iterator != Iterator{};
+            };
+            for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, error); has_entry(it) && result.size() < 3000; it.increment(error)) {
                 if (error) { error.clear(); continue; }
                 auto name = it->path().filename().string();
                 if (it->is_directory(error) && (name.starts_with('.') || name == "target" || name == "node_modules" || name == "build")) { it.disable_recursion_pending(); continue; }
