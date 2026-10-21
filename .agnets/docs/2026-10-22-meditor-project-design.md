@@ -622,7 +622,7 @@ PR #1 保留所有 0.0.1 提交；不 squash，不在四端验收前将草稿完
 
 新增根级 `build-support/` 专门承载 meditor 自有构建插件和仅构建期依赖，不要求创建名为 `mcpp/` 的目录，也不把这类代码与编辑器运行时代码混放在 `modules/`。根及 GUI 的 `build.mcpp` 保持薄入口，通过 `[build-dependencies]` 消费自有插件和 HuxerUI 规则。
 
-当前 `modules/distribution` 仅被根构建程序用于载荷规划，应迁至 `build-support/distribution/`；同步 workspace member、路径依赖、消费者与 CI 测试命令，保留 Git 历史及已有验证。构建期模块继续采用 `.cppm`/`.cpp` 分离。将来如需运行时校验安装载荷，将相应运行时接口放在 `modules/` 的实际所属组件，不能让编辑器链接整个构建插件。
+原 `modules/distribution` 仅被根构建程序用于载荷规划，已迁至 `build-support/distribution/`；workspace member 与路径依赖同步更新，CI 继续按稳定包名运行已有测试，保留 Git 历史及验证。构建期模块继续采用 `.cppm`/`.cpp` 分离。将来如需运行时校验安装载荷，将相应运行时接口放在 `modules/` 的实际所属组件，不能让编辑器链接整个构建插件。
 
 通用资源导出、品牌图标生成、翻译资源嵌入和开源声明生成按真实复用价值组织为构建模块，不按每种资源新建一个包。构建插件在宿主执行；Android/Web 等目标构建不得误把目标架构库链接进宿主插件，插件、Python 脚本及开发测试工具也不应作为产品运行依赖进入安装包。
 

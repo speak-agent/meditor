@@ -1,5 +1,5 @@
 [workspace]
-members = ["modules/document", "modules/platform", "modules/application", "modules/distribution", "apps/gui"]
+members = ["modules/document", "modules/platform", "modules/application", "build-support/distribution", "apps/gui"]
 
 [workspace.package]
 mcpp = ">=2026.10.10.1"
@@ -48,7 +48,7 @@ required_features = ["test-support"]
 main = "tests/support/tool.cpp"
 
 [build-dependencies]
-meditor-distribution = { path = "modules/distribution" }
+meditor-distribution = { path = "build-support/distribution" }
 
 [target.'cfg(any(os = "macos", os = "ios"))'.dependencies]
 llvm.libcxx = "=22.1.8.3"
