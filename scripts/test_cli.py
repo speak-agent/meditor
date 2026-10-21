@@ -68,6 +68,8 @@ def main():
             assert "fixture-target" in result["output"]
             completion = request("language.completion", {"document": doc, "position": {"line": 1, "character": 7}})
             assert completion["items"][0]["label"] == "module_value"
+            diagnostics = request("language.diagnostics")
+            assert diagnostics[0]["diagnostics"][0]["message"] == "fixture diagnostic"
             assert request("modules.graph", {"document": doc})["modules"][0]["name"] == "fixture"
             request("language.stop")
             assert request("unknown.command", ok=False)["code"] == "unknown-command"

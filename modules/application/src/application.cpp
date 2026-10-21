@@ -69,7 +69,8 @@ class Language {
                         const auto id = message["id"].get<std::int64_t>();
                         std::lock_guard lock(mutex_); replies_[id] = std::move(message); ready_.notify_all();
                     } else if (message.value("method", "") == "textDocument/publishDiagnostics") {
-                        std::lock_guard lock(mutex_); auto params = message.at("params"); diagnostics_[params.value("uri", "")] = std::move(params);
+                        auto params = message.at("params"); auto uri = params.value("uri", "");
+                        std::lock_guard lock(mutex_); diagnostics_[uri] = std::move(params);
                     } else if (message.value("method", "") == "cxxModules/status") {
                         std::lock_guard lock(mutex_); status_ = message.at("params");
                     }
@@ -80,12 +81,13 @@ class Language {
         closed_ = true; ready_.notify_all();
     }
 public:
-    Language(const std::filesystem::path& tool, const std::filesystem::path& root) {
+    Language(const std::filesystem::path& tool, const std::filesystem::path& driver, const std::filesystem::path& root) {
         process_.start({tool.string(), "serve"}, root, false);
         reader_ = std::jthread([this](std::stop_token stop) { receive_(stop); });
         try {
             auto init = request("initialize", {{"processId", nullptr}, {"rootUri", make_uri(root)}, {"clientInfo", {{"name", "meditor"}, {"version", "0.0.1"}}},
                 {"workspaceFolders", Json::array({{{"uri", make_uri(root)}, {"name", "workspace"}}})},
+                {"initializationOptions", {{"mcpp", driver.string()}, {"toolEnvironment", "editor"}}},
                 {"capabilities", {{"general", {{"positionEncodings", Json::array({"utf-16"})}}}, {"workspace", {{"configuration", true}}},
                     {"textDocument", {{"synchronization", {{"didSave", true}}}, {"completion", {{"completionItem", {{"snippetSupport", false}}}}}}},
                     {"experimental", {{"cxxModules", {{"version", 1}, {"status", true}, {"graph", true}, {"contexts", true}}}}}}}}, 30000);
@@ -176,7 +178,7 @@ struct Application::Impl {
     void require_trust() const { if (!trusted) throw CommandError("workspace-untrusted", "Explicitly trust this workspace before executing tools"); }
     void sync(Record& record) {
         require_trust();
-        if (!language) language = std::make_unique<Language>(tool("mcppls"), root);
+        if (!language) language = std::make_unique<Language>(tool("mcppls"), tool("mcpp"), root);
         auto uri = make_uri(resolve(record.path));
         if (!record.synced) language->notify("textDocument/didOpen", {{"textDocument", {{"uri", uri}, {"languageId", "cpp"}, {"version", ++record.lspVersion}, {"text", record.document.text()}}}});
         else if (record.synced != record.document.revision()) language->notify("textDocument/didChange", {{"textDocument", {{"uri", uri}, {"version", ++record.lspVersion}}}, {"contentChanges", Json::array({{{"text", record.document.text()}}})}});

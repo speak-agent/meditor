@@ -30,6 +30,12 @@ int main(int argc, char** argv) {
         std::string body(length, '\0'); std::cin.read(body.data(), length); if (!std::cin) break;
         auto request = Json::parse(body); auto method = request.value("method", "");
         if (method == "exit") return 0;
+        if (method == "textDocument/didOpen") {
+            auto document = request.at("params").at("textDocument");
+            send({{"jsonrpc", "2.0"}, {"method", "textDocument/publishDiagnostics"},
+                {"params", {{"uri", document.at("uri")}, {"version", document.at("version")},
+                    {"diagnostics", Json::array({{{"range", {{"start", {{"line", 0}, {"character", 0}}}, {"end", {{"line", 0}, {"character", 1}}}}}, {"severity", 2}, {"message", "fixture diagnostic"}}})}}}});
+        }
         if (!request.contains("id")) continue;
         Json result = nullptr;
         if (method == "initialize") result = {{"capabilities", {{"textDocumentSync", 1}, {"positionEncoding", "utf-16"}, {"experimental", {{"cxxModules", {{"version", 1}}}}}}}};
