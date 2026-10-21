@@ -1,0 +1,10 @@
+[package]
+name = "document-consumer"
+version = "0.0.1"
+standard = "c++23"
+
+[dependencies]
+meditor-document = { path = "../../../modules/document" }
+
+[toolchain]
+default = "llvm@23.1.3"

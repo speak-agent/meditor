@@ -1,0 +1,298 @@
+{
+  "schemaVersion": 1,
+  "release": "0.0.1",
+  "requiredPlatforms": [
+    "linux",
+    "windows",
+    "android",
+    "macos"
+  ],
+  "criteria": [
+    {
+      "id": "A01",
+      "description": "clean installation and first-run preparation",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A02",
+      "description": "real project edit, language and build workflow",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A03",
+      "description": "document integrity and disk failure handling",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A04",
+      "description": "native IME, Unicode and clipboard",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A05",
+      "description": "GUI and CLI shared-session consistency",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A06",
+      "description": "language and process lifecycle recovery",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A07",
+      "description": "crash recovery and two-hour reliability",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A08",
+      "description": "responsive visual, keyboard and touch review",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A09",
+      "description": "measured performance and resource budgets",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A10",
+      "description": "privacy, authorization and artifact inspection",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A11",
+      "description": "upgrade, rollback and uninstall",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A12",
+      "description": "bundled source projects and independent examples",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    },
+    {
+      "id": "A13",
+      "description": "workspace and reusable package consumers",
+      "platforms": {
+        "linux": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "windows": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "android": {
+          "status": "not-tested",
+          "evidence": []
+        },
+        "macos": {
+          "status": "not-tested",
+          "evidence": []
+        }
+      }
+    }
+  ]
+}
