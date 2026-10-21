@@ -21,6 +21,7 @@ class Document {
     std::vector<Snapshot> undo_;
     std::vector<Snapshot> redo_;
     std::uint64_t revision_ {1};
+    std::string historyGroup_;
     void check_revision_(std::uint64_t revision) const;
 public:
     explicit Document(std::string text = {});
@@ -28,7 +29,7 @@ public:
     std::uint64_t revision() const noexcept;
     bool dirty() const;
     std::size_t size() const noexcept;
-    void apply(std::vector<Edit> edits, std::uint64_t expectedRevision);
+    void apply(std::vector<Edit> edits, std::uint64_t expectedRevision, std::string historyGroup = {});
     bool undo(std::uint64_t expectedRevision);
     bool redo(std::uint64_t expectedRevision);
     void mark_saved(std::string savedText);

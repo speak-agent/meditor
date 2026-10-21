@@ -248,7 +248,7 @@ struct Application::Impl {
                     } else { start = edit.at("start"); end = edit.at("end"); }
                     edits.push_back({start, end, edit.at("text").get<std::string>()});
                 }
-                record.document.apply(std::move(edits), revision);
+                record.document.apply(std::move(edits), revision, params.value("historyGroup", std::string{}));
             } else if (command == "document.undo") record.document.undo(revision);
             else if (command == "document.redo") record.document.redo(revision);
             else if (command == "document.save") {
@@ -321,13 +321,48 @@ std::string Application::session_id() const { return impl_->session; }
 Json Application::capabilities() const {
     Json commands = Json::array();
     for (auto name : {"capabilities", "workspace.status", "workspace.files", "workspace.trust", "document.open", "document.read", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
-    return {{"version", "0.0.1"}, {"protocolVersion", 1}, {"positionEncoding", "utf-16"}, {"editOffsets", "utf-8-bytes"}, {"sessionTransport", "stdio-jsonl"}, {"commands", commands}};
+    Json schemas = Json::object();
+    for (const auto& name : commands) {
+        const auto command = name.get<std::string>();
+        Json properties = Json::object(); Json required = Json::array();
+        auto field = [&](std::string key, std::string type, bool needed = false) { properties[key] = {{"type", type}}; if (needed) required.push_back(key); };
+        if (command == "document.open") { field("path", "string", true); field("create", "boolean"); }
+        else if (command.starts_with("document.") || command.starts_with("language.") || command.starts_with("modules.")) {
+            if (command != "language.stop" && command != "language.diagnostics") field("document", "string", true);
+            if (command == "document.edit" || command == "document.undo" || command == "document.redo" || command == "document.save") field("revision", "integer", true);
+            if (command == "document.edit") { field("edits", "array", true); field("historyGroup", "string"); }
+            if (command == "modules.info") field("name", "string", true);
+            if (command == "language.completion" || command == "language.hover" || command == "language.definition" || command == "language.references" || command == "language.signature") field("position", "object", true);
+        } else if (command.starts_with("task.")) { field("task", "string", true); field("timeoutMs", "integer"); }
+        else if (command == "workspace.trust") field("allow", "boolean", true);
+        else if (command == "project.new" || command.starts_with("package.")) field("name", "string", true);
+        else if (command == "toolchain.install") { field("family", "string", true); field("version", "string", true); }
+        if (command == "build" || command == "run" || command == "test") { field("target", "string"); field("profile", "string"); field("features", "string"); }
+        if (command == "build" || command == "run" || command == "test" || command == "project.new" || command.starts_with("package.") || command.starts_with("toolchain.") || command == "environment.prepare") field("timeoutMs", "integer");
+        schemas[command] = {{"type", "object"}, {"properties", properties}, {"required", required}, {"additionalProperties", false}};
+    }
+    return {{"version", "0.0.1"}, {"protocolVersion", 1}, {"positionEncoding", "utf-16"}, {"editOffsets", "utf-8-bytes"}, {"sessionTransport", "stdio-jsonl"}, {"commands", commands}, {"commandSchemas", schemas}};
 }
 Json Application::execute(const Json& request) {
     Json response = {{"schemaVersion", 1}, {"kind", "meditor.result"}, {"kindVersion", 1}, {"session", session_id()}, {"requestId", request.is_object() ? request.value("id", Json(nullptr)) : Json(nullptr)}, {"effects", Json::array()}};
     try {
         if (!request.is_object()) throw CommandError("invalid-params", "Request must be a JSON object");
         auto command = request.at("command").get<std::string>(); auto params = request.value("params", Json::object());
+        if (!params.is_object()) throw CommandError("invalid-params", "Parameters must be an object");
+        auto schemas = capabilities().at("commandSchemas");
+        if (schemas.contains(command)) {
+            const auto& schema = schemas.at(command);
+            for (const auto& key : schema.at("required"))
+                if (!params.contains(key.get<std::string>())) throw CommandError("invalid-params", "Required parameter is missing");
+            for (const auto& item : params.items()) {
+                const auto& properties = schema.at("properties");
+                if (!properties.contains(item.key())) throw CommandError("invalid-params", "Unknown parameter");
+                const auto type = properties.at(item.key()).at("type").get<std::string>();
+                const auto& value = item.value();
+                bool valid = type == "string" ? value.is_string() : type == "integer" ? value.is_number_integer() : type == "boolean" ? value.is_boolean() : type == "array" ? value.is_array() : type == "object" && value.is_object();
+                if (!valid) throw CommandError("invalid-params", "Parameter has the wrong type");
+            }
+        }
         response["data"] = command == "capabilities" ? capabilities() : impl_->dispatch(command, params);
         response["ok"] = true;
         if (command == "document.edit" || command == "document.undo" || command == "document.redo") response["effects"].push_back("document-change");

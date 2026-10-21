@@ -43,7 +43,7 @@ std::size_t Document::size() const noexcept {
 void Document::check_revision_(std::uint64_t revision) const {
     if (revision != revision_) throw std::runtime_error("revision-conflict");
 }
-void Document::apply(std::vector<Edit> edits, std::uint64_t expectedRevision) {
+void Document::apply(std::vector<Edit> edits, std::uint64_t expectedRevision, std::string historyGroup) {
     check_revision_(expectedRevision);
     const auto before = text();
     std::stable_sort(edits.begin(), edits.end(), [](const Edit& a, const Edit& b) { return a.start < b.start; });
@@ -79,14 +79,16 @@ void Document::apply(std::vector<Edit> edits, std::uint64_t expectedRevision) {
         }
         next = std::move(result);
     }
-    undo_.push_back({pieces_}); redo_.clear(); added_ = std::move(added); pieces_ = std::move(next); ++revision_;
+    if (historyGroup.empty() || historyGroup != historyGroup_ || undo_.empty()) undo_.push_back({pieces_});
+    historyGroup_ = std::move(historyGroup);
+    redo_.clear(); added_ = std::move(added); pieces_ = std::move(next); ++revision_;
 }
 bool Document::undo(std::uint64_t expectedRevision) {
-    check_revision_(expectedRevision); if (undo_.empty()) return false;
+    check_revision_(expectedRevision); historyGroup_.clear(); if (undo_.empty()) return false;
     redo_.push_back({pieces_}); pieces_ = std::move(undo_.back().pieces); undo_.pop_back(); ++revision_; return true;
 }
 bool Document::redo(std::uint64_t expectedRevision) {
-    check_revision_(expectedRevision); if (redo_.empty()) return false;
+    check_revision_(expectedRevision); historyGroup_.clear(); if (redo_.empty()) return false;
     undo_.push_back({pieces_}); pieces_ = std::move(redo_.back().pieces); redo_.pop_back(); ++revision_; return true;
 }
 void Document::mark_saved(std::string text) { saved_ = std::move(text); }

@@ -30,6 +30,14 @@ int main() {
         require(generated.undo(generated.revision()) && generated.text() == old);
         require(generated.redo(generated.revision()) && generated.text() == expected);
     }
+    Document composition("before ");
+    composition.apply({{7, 7, "n"}}, composition.revision(), "ime-1");
+    composition.apply({{7, 8, "ni"}}, composition.revision(), "ime-1");
+    composition.apply({{7, 9, "你"}}, composition.revision(), "ime-1");
+    require(composition.undo(composition.revision()) && composition.text() == "before ");
+    require(composition.redo(composition.revision()) && composition.text() == "before 你");
+    composition.apply({{10, 10, "!"}}, composition.revision());
+    require(composition.undo(composition.revision()) && composition.text() == "before 你");
     require(!valid_utf8("\xc0\x80"));
     std::println("document transactions: passed");
 }

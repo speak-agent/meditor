@@ -42,6 +42,10 @@ def main():
             assert "document.edit" in request("capabilities")["commands"]
             assert request("document.open", {"path": "../outside"}, ok=False)["code"] == "invalid-path"
             assert request("document.open", {"path": "missing"}, ok=False)["code"] == "not-found"
+            capabilities = request("capabilities")
+            assert set(capabilities["commands"]) == set(capabilities["commandSchemas"])
+            assert request("document.open", {"path": "hello.cppm", "unexpected": True}, ok=False)["code"] == "invalid-params"
+            assert request("workspace.trust", {"allow": "true"}, ok=False)["code"] == "invalid-params"
             document = request("document.open", {"path": "hello.cppm"})
             doc = document["document"]
             assert request("document.read", {"document": doc})["text"] == original
