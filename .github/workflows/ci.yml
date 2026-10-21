@@ -66,7 +66,7 @@ jobs:
       - name: Build native CLI and fixture tool
         run: mcpp build --features test-support
       - name: Test document, platform and delivery packages
-        run: mcpp test -p meditor-document -p meditor-platform -p meditor-distribution
+        run: mcpp test -p meditor-document -p meditor-platform -p meditor-application -p meditor-distribution
       - name: Build a standalone public document consumer
         working-directory: tests/consumers/document
         run: mcpp run

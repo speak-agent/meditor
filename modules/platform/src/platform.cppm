@@ -5,6 +5,7 @@ import std;
 
 export namespace meditor {
 struct ProcessRead { std::string data; bool ended {}; };
+using ProcessEnvironment = std::map<std::string, std::optional<std::string>>;
 class FileLock {
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -23,7 +24,7 @@ public:
     Process(Process&&) noexcept;
     Process& operator=(Process&&) noexcept;
     Process(const Process&) = delete;
-    void start(const std::vector<std::string>& arguments, const std::filesystem::path& directory, bool mergeErrors = true);
+    void start(const std::vector<std::string>& arguments, const std::filesystem::path& directory, bool mergeErrors = true, const ProcessEnvironment& environment = {});
     void write(std::string_view data);
     void close_input();
     ProcessRead read(std::chrono::milliseconds timeout);

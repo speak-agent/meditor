@@ -16,6 +16,9 @@ module;
 #include <cerrno>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
+#include <crt_externs.h>
+#else
+extern "C" char** environ;
 #endif
 #endif
 module meditor.platform;
@@ -86,16 +89,50 @@ std::wstring quote(std::string_view text) {
     }
     result.append(slashes * 2, L'\\'); return result + L'"';
 }
+std::vector<wchar_t> environment_block(const ProcessEnvironment& overrides) {
+    struct KeyLess {
+        bool operator()(const std::wstring& left, const std::wstring& right) const {
+            return CompareStringOrdinal(left.data(), static_cast<int>(left.size()), right.data(), static_cast<int>(right.size()), TRUE) == CSTR_LESS_THAN;
+        }
+    };
+    std::map<std::wstring, std::wstring, KeyLess> values;
+    std::unique_ptr<wchar_t, decltype(&FreeEnvironmentStringsW)> inherited(GetEnvironmentStringsW(), FreeEnvironmentStringsW);
+    if (!inherited) throw std::runtime_error("Could not read the process environment");
+    for (auto* item = inherited.get(); *item;) {
+        std::wstring entry(item); item += entry.size() + 1;
+        auto separator = entry.find(L'=', 1);
+        if (separator != std::wstring::npos) values[entry.substr(0, separator)] = entry.substr(separator + 1);
+    }
+    for (const auto& [key, value] : overrides) {
+        auto name = wide(key);
+        if (value) values[name] = wide(*value); else values.erase(name);
+    }
+    std::vector<wchar_t> block;
+    for (const auto& [key, value] : values) {
+        block.insert(block.end(), key.begin(), key.end()); block.push_back(L'=');
+        block.insert(block.end(), value.begin(), value.end()); block.push_back(L'\0');
+    }
+    block.push_back(L'\0'); if (block.size() == 1) block.push_back(L'\0');
+    return block;
+}
 }
 #endif
-void Process::start(const std::vector<std::string>& args, const std::filesystem::path& directory, bool mergeErrors) {
+void Process::start(const std::vector<std::string>& args, const std::filesystem::path& directory, bool mergeErrors, const ProcessEnvironment& environment) {
     if (!impl_) impl_ = std::make_unique<Impl>();
     if (args.empty()) throw std::runtime_error("Empty process command");
     for (const auto& arg : args) if (arg.find('\0') != std::string::npos) throw std::runtime_error("Invalid process argument");
+    for (const auto& [key, value] : environment)
+        if (key.empty() || key.find('=') != std::string::npos || key.find('\0') != std::string::npos || (value && value->find('\0') != std::string::npos))
+            throw std::runtime_error("Invalid process environment entry");
+    if (!environment.empty() && !std::filesystem::u8path(args.front()).is_absolute())
+        throw std::runtime_error("An isolated tool environment requires an absolute executable");
 #if defined(__EMSCRIPTEN__)
     throw std::runtime_error("Local tool processes are unavailable in a browser");
 #elif defined(_WIN32)
     if (impl_->process) throw std::runtime_error("Process already started");
+    std::wstring command; for (const auto& arg : args) { if (!command.empty()) command += L' '; command += quote(arg); }
+    auto childEnvironment = environment.empty() ? std::vector<wchar_t>{} : environment_block(environment);
+    auto cwd = directory.wstring();
     SECURITY_ATTRIBUTES attributes {sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     HANDLE childInput {}, childOutput {};
     if (!CreatePipe(&childInput, &impl_->input, &attributes, 0)) throw std::runtime_error("Could not create process input");
@@ -104,9 +141,9 @@ void Process::start(const std::vector<std::string>& args, const std::filesystem:
     HANDLE nullError = mergeErrors ? nullptr : CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes, OPEN_EXISTING, 0, nullptr);
     STARTUPINFOW startup {}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESTDHANDLES;
     startup.hStdInput = childInput; startup.hStdOutput = childOutput; startup.hStdError = mergeErrors ? childOutput : nullError;
-    std::wstring command; for (const auto& arg : args) { if (!command.empty()) command += L' '; command += quote(arg); }
-    PROCESS_INFORMATION process {}; auto cwd = directory.wstring();
-    bool started = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &startup, &process);
+    PROCESS_INFORMATION process {};
+    bool started = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+        childEnvironment.empty() ? nullptr : childEnvironment.data(), cwd.empty() ? nullptr : cwd.c_str(), &startup, &process);
     CloseHandle(childInput); CloseHandle(childOutput); if (nullError && nullError != INVALID_HANDLE_VALUE) CloseHandle(nullError);
     if (!started) { CloseHandle(impl_->input); CloseHandle(impl_->output); impl_->input = impl_->output = nullptr; throw std::runtime_error("Tool could not be started"); }
     impl_->process = process.hProcess;
@@ -122,6 +159,24 @@ void Process::start(const std::vector<std::string>& args, const std::filesystem:
     if (pipe(input)) throw std::runtime_error("Could not create process input");
     if (pipe(output)) { close(input[0]); close(input[1]); throw std::runtime_error("Could not create process output"); }
     std::vector<char*> arguments; for (const auto& arg : args) arguments.push_back(const_cast<char*>(arg.c_str())); arguments.push_back(nullptr);
+    std::vector<std::string> environmentStorage;
+    std::vector<char*> environmentPointers;
+    if (!environment.empty()) {
+        std::map<std::string, std::string> values;
+#if defined(__APPLE__)
+        auto** inherited = *_NSGetEnviron();
+#else
+        auto** inherited = environ;
+#endif
+        for (auto** item = inherited; item && *item; ++item) {
+            std::string entry(*item); auto separator = entry.find('=');
+            if (separator != std::string::npos) values[entry.substr(0, separator)] = entry.substr(separator + 1);
+        }
+        for (const auto& [key, value] : environment) { if (value) values[key] = *value; else values.erase(key); }
+        for (const auto& [key, value] : values) environmentStorage.push_back(key + "=" + value);
+        for (auto& entry : environmentStorage) environmentPointers.push_back(entry.data());
+        environmentPointers.push_back(nullptr);
+    }
     impl_->process = fork();
     if (!impl_->process) {
         setpgid(0, 0); dup2(input[0], STDIN_FILENO); dup2(output[1], STDOUT_FILENO);
@@ -129,7 +184,9 @@ void Process::start(const std::vector<std::string>& args, const std::filesystem:
         else { int fd = open("/dev/null", O_WRONLY); if (fd >= 0) { dup2(fd, STDERR_FILENO); close(fd); } }
         close(input[0]); close(input[1]); close(output[0]); close(output[1]);
         if (!directory.empty() && chdir(directory.c_str())) _exit(125);
-        execvp(arguments[0], arguments.data()); _exit(errno == ENOENT ? 127 : 126);
+        if (environment.empty()) execvp(arguments[0], arguments.data());
+        else execve(arguments[0], arguments.data(), environmentPointers.data());
+        _exit(errno == ENOENT ? 127 : 126);
     }
     close(input[0]); close(output[1]);
     if (impl_->process < 0) { close(input[1]); close(output[0]); throw std::runtime_error("Tool could not be started"); }
