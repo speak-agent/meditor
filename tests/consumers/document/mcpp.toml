@@ -2,6 +2,7 @@
 name = "document-consumer"
 version = "0.0.1"
 standard = "c++23"
+license = "GPL-3.0-only"
 
 [dependencies]
 meditor-document = { path = "../../../modules/document" }

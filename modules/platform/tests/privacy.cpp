@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Sunrisepeak & mcpp-community
 import std;
 import meditor.platform;
 void require(bool value) { if (!value) throw std::runtime_error("Privacy assertion failed"); }

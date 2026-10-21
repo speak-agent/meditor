@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Prepare complete, verified upstream tool trees for mcpp deployment rules."""
 import argparse
 import hashlib

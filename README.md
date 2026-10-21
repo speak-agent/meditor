@@ -14,3 +14,5 @@ mcpp run -p meditor-gui -- --workspace .
 ```
 
 [Design and acceptance criteria](.agnets/docs/2026-10-22-meditor-project-design.md) · [Development rules](AGENTS.md)
+
+[GPL 3.0](LICENSING.md) · Contributors: Sunrisepeak & mcpp-community · speakshen@163.com

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Sunrisepeak & mcpp-community
 import std;
 import nlohmann.json;
 import meditor.distribution;

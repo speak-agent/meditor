@@ -2,6 +2,10 @@
 
 轻量级、跨平台、专注 mcpp 与 C++ Modules 的产品级现代编辑器，支持桌面和手机；交互复杂度对标 Dev-C++，采用现代、简洁、优雅的视觉与交互。
 
+## 许可
+
+- meditor 自有代码采用 `GPL-3.0-only`，自有源码带 SPDX 与版权声明；署名 `Sunrisepeak & mcpp-community`，公开联系邮箱 `speakshen@163.com`。第三方及导入的 skills 保留原始许可、署名和适用通知。
+
 ## 实现约定
 
 - 使用 **mcpp + C++23 Modules** 构建；mcpp 用法见 [skill](.agents/skills/mcpp-usage/SKILL.md)。以当前 mcpp 文档与实际行为为准。

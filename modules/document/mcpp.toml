@@ -2,7 +2,7 @@
 name = "meditor-document"
 version = "0.0.1"
 standard = "c++23"
-license = "MIT"
+license = "GPL-3.0-only"
 
 [lib]
 path = "src/document.cppm"

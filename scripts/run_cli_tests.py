@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Locate the built native targets without hardcoding a host triple or machine path."""
 from pathlib import Path
 import os

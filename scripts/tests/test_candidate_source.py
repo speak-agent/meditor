@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Exercise committed-source isolation and payload verification without network access."""
 import contextlib
 import hashlib

@@ -9,7 +9,7 @@ name = "meditor"
 version = "0.0.1"
 standard = "c++23"
 description = "A modern editor for mcpp and C++ Modules"
-license = "MIT"
+license = "GPL-3.0-only"
 repo = "https://github.com/speak-agent/meditor"
 
 [dependencies]

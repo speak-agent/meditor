@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Install the pinned upstream mcpp payload after verifying its published SHA-256."""
 import argparse
 import hashlib

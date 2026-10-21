@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Check public sources and documentation without publishing machine-specific diagnostics."""
 from pathlib import Path
 import os

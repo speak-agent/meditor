@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Validate acceptance evidence; --release refuses every unproven required platform criterion."""
 import argparse
 import json

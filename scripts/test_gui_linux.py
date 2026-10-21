@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Drive the native Linux editor with X11 input against a synthetic workspace."""
 import argparse
 import ctypes as c

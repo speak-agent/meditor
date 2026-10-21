@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Security-boundary tests use synthetic artifacts and never publish the matched bytes."""
 import importlib.util
 from pathlib import Path

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Exercise the real CLI, document transactions and framed LSP against an isolated fixture tool."""
 import argparse
 import json

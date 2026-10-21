@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Refuse artifacts containing this build machine's private path or host identity."""
 import argparse
 import mmap
