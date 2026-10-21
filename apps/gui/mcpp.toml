@@ -33,3 +33,6 @@ min_api_level = 23
 
 [target.aarch64-linux-android]
 min_api_level = 23
+
+[dev-dependencies]
+huxerui.huxerui-testing = { git = "https://github.com/Sunrisepeak/HuxerUI.git", branch = "meditor" }

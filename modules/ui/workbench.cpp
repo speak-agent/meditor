@@ -48,10 +48,22 @@ View workbench() {
         auto path = UseState(TextEditingValue::FromText(""));
         auto tasks = UseTaskScope();
         auto picker = UseService<FilePicker>();
-        auto app = UseApplication();
+        auto window = UseWindow();
+        auto transition = UseSceneTransition();
         auto compact = UseViewportClass() == ViewportClass::Compact;
         auto refresh = [epoch] { epoch += 1; };
         auto data = model.Get(); (void)epoch.Get();
+        window.OnCloseRequest([data, refresh] {
+            if (!data->application) return false;
+            auto state = data->application->execute({{"command", "workspace.status"}});
+            for (const auto& document : state["data"]["documents"]) {
+                if (document.value("dirty", false)) {
+                    data->status = "Save modified documents before closing";
+                    refresh(); return true;
+                }
+            }
+            return false;
+        });
         auto run = [data, refresh](std::string command, Json params = Json::object()) {
             if (!data->application) { data->status = "Open a workspace first"; refresh(); return Json(); }
             auto result = data->application->execute({{"command", command}, {"params", std::move(params)}});
@@ -115,13 +127,15 @@ View workbench() {
         auto background = data->dark ? Color::Rgb(15, 20, 29) : Color::Rgb(250, 252, 255);
         auto ink = data->dark ? Color::Rgb(215, 225, 240) : Color::Rgb(35, 47, 65);
         auto muted = data->dark ? Color::Rgb(142, 158, 182) : Color::Rgb(96, 110, 132);
-        auto header = Row {
+        auto header = WindowTitleBar {
             Text("m", TextRole::Title).With(Padding(8), Background(Color::Rgb(72, 107, 239)), Foreground(Color::White()), CornerRadius(9)),
             Text("meditor", TextRole::Title),
-            Text(data->selected ? data->name : "C++ Modules, naturally.", TextRole::Label).With(Grow{1}, Foreground(muted)),
+            compact ? View(Spacer().With(Grow{1})) : View(Text(data->selected ? data->name : "C++ Modules, naturally.", TextRole::Label).With(Grow{1}, Foreground(muted))),
             Button(compact ? "Files" : "Explorer").OnClick([data, refresh] { data->navigation = !data->navigation; refresh(); }),
-            Button(data->dark ? "Light" : "Dark").OnClick([data, refresh] { data->dark = !data->dark; refresh(); }),
-        }.With(Padding(12), Spacing(12), CrossAlign(CrossAxisAlignment::Center));
+            Button(data->dark ? "Light" : "Dark").OnClick([data, refresh, transition] {
+                transition.Run(TransitionSpec{FadeTransition{}, TweenSpec{0.12}}, [data, refresh] { data->dark = !data->dark; refresh(); });
+            }),
+        }.Key("window-title-bar").With(Padding(12), Spacing(12), CrossAlign(CrossAxisAlignment::Center));
         View body;
         if (!data->selected) {
             body = Column {
@@ -169,12 +183,14 @@ View workbench() {
             body = Row {data->navigation ? View(sidebar) : View{}, (!compact || !data->navigation) ? View(center) : View{}}.With(Grow{1}, CrossAlign(CrossAxisAlignment::Stretch));
         }
         auto page = Column {header, Divider(), body,
-            Row {Text(data->status, TextRole::Label).With(Grow{1}), Text("C++23 · Modules", TextRole::Label).With(Foreground(muted))}.With(Padding(10), Background(pane))
+            Row {Text(data->status, TextRole::Label).With(Grow{1}), Text("C++23 · Modules", TextRole::Label).With(Foreground(muted))}.Key("status-bar").With(Padding(10), Background(pane))
         }.With(Background(background), Foreground(ink), CrossAlign(CrossAxisAlignment::Stretch))
             .On<ViewEvents::KeyIntercept>([save](const KeyEvent& event) {
                 if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::S) { save(); return true; } return false;
             });
-        return data->dark ? View(FlatDarkTheme(std::move(page))) : View(FlatTheme(std::move(page)));
+        auto theme = data->dark ? FlatDarkThemeSpec() : FlatLightThemeSpec();
+        theme.motion.reduced_motion = UseTheme().motion.reduced_motion;
+        return FlatTheme(theme, std::move(page));
     });
 }
 }
