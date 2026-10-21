@@ -12,11 +12,13 @@ CANONICAL_GPL_SHA256 = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9
 
 
 def main():
-    if hashlib.sha256((ROOT / "LICENSE").read_bytes()).hexdigest() != CANONICAL_GPL_SHA256:
+    license_file = (ROOT / "LICENSE").read_bytes()
+    prefix, separator, body = license_file.partition(b"\n---\n\n")
+    if not separator or hashlib.sha256(body).hexdigest() != CANONICAL_GPL_SHA256:
         raise SystemExit("LICENSE must preserve the canonical GNU GPL version 3 text")
     policy = (ROOT / "LICENSING.md").read_text(encoding="utf-8")
     for value in ["GPL-3.0-only", "Sunrisepeak & mcpp-community", "speakshen@163.com"]:
-        if value not in policy:
+        if value not in policy or value.encode("utf-8") not in prefix:
             raise SystemExit("Project licensing policy is incomplete")
     files = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
     source_count = package_count = 0

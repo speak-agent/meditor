@@ -5,12 +5,13 @@
 ## 许可
 
 - meditor 自有代码采用 `GPL-3.0-only`，自有源码带 SPDX 与版权声明；署名 `Sunrisepeak & mcpp-community`，公开联系邮箱 `speakshen@163.com`。第三方及导入的 skills 保留原始许可、署名和适用通知。
+- 项目署名和邮箱按 mcpp 的格式放在 LICENSE 正文之前，README 不追加 GPL/Contributors/邮箱署名行。
 
 ## 实现约定
 
 - 使用 **mcpp + C++23 Modules** 构建；mcpp 用法见 [skill](.agents/skills/mcpp-usage/SKILL.md)。以当前 mcpp 文档与实际行为为准。
 - C++ 命名与编码遵循 [mcpp-style-ref](.agents/skills/mcpp-style-ref/SKILL.md) 和 [详细参考](.agents/skills/mcpp-style-ref/reference.md)；本文件的构建、目录与接口分离约定优先。
-- 使用 mcpp workspace 划分应用与组件，共享版本、工具链和依赖。编辑器运行时自研组件放在 `modules/<component>/`；自有 mcpp 构建插件及仅构建期依赖放在根级 `build-support/`，通过 `[build-dependencies]` 引用，不混入运行时依赖；仅职责独立、接口稳定、可独立构建测试且有复用/分发价值的子系统设独立 `mcpp.toml`，不因一两个文件拆包。普通内部模块保留在所属包。应用目录只留入口与装配，README 保持简洁。
+- 使用 mcpp workspace 划分应用与组件，共享版本、工具链和依赖。编辑器运行时自研组件放在 `modules/<component>/`；自有 mcpp 构建插件及仅构建期依赖放在根级 `mcpp/`，通过 `[build-dependencies]` 引用，不混入运行时依赖；仅职责独立、接口稳定、可独立构建测试且有复用/分发价值的子系统设独立 `mcpp.toml`，不因一两个文件拆包。普通内部模块保留在所属包。应用目录只留入口与装配，README 保持简洁。
 - `.cppm` 声明模块接口，配套 `.cpp` 使用 `module <name>;` 实现；模板、constexpr 及必须可见的定义留在接口。使用 `import std;`，传统头文件限制在第三方或平台适配边界。
 - 必需头文件收敛到最小适配模块和实现单元，私有 include 路径不外泄；不在多个公共模块重复包含重头文件。openkal 优先评估为平台实现候选，不未经兼容验证就替换 GUI 进程的 C/C++ 运行时。
 - 优先复用 [mcpp-index](https://github.com/mcpp-community/mcpp-index) 中维护良好、质量可靠、覆盖目标平台的库；核对实际平台支持、依赖体积与许可证，避免重复自研通用设施。
