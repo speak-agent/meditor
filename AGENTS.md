@@ -6,8 +6,9 @@
 
 - 使用 **mcpp + C++23 Modules** 构建；mcpp 用法见 [skill](.agents/skills/mcpp-usage/SKILL.md)。以当前 mcpp 文档与实际行为为准。
 - C++ 命名与编码遵循 [mcpp-style-ref](.agents/skills/mcpp-style-ref/SKILL.md) 和 [详细参考](.agents/skills/mcpp-style-ref/reference.md)；本文件的构建、目录与接口分离约定优先。
-- 自研组件放在 `modules/<component>/`，按职责划分；独立包带 `mcpp.toml`，通过显式依赖连接。`src/` 只留应用入口与装配。
+- 使用 mcpp workspace 划分应用与组件，共享版本、工具链和依赖。自研组件放在 `modules/<component>/`；仅职责独立、接口稳定、可独立构建测试且有复用/分发价值的子系统设独立 `mcpp.toml`，不因一两个文件拆包。普通内部模块保留在所属包。应用目录只留入口与装配，README 保持简洁。
 - `.cppm` 声明模块接口，配套 `.cpp` 使用 `module <name>;` 实现；模板、constexpr 及必须可见的定义留在接口。使用 `import std;`，传统头文件限制在第三方或平台适配边界。
+- 必需头文件收敛到最小适配模块和实现单元，私有 include 路径不外泄；不在多个公共模块重复包含重头文件。openkal 优先评估为平台实现候选，不未经兼容验证就替换 GUI 进程的 C/C++ 运行时。
 - 优先复用 [mcpp-index](https://github.com/mcpp-community/mcpp-index) 中维护良好、质量可靠、覆盖目标平台的库；核对实际平台支持、依赖体积与许可证，避免重复自研通用设施。
 - mcpp、mcppls 按平台携完整运行载荷随包分发，通过现有 CLI/JSON、LSP 接口原生集成，不修改两者源码。产品统一通过 meditor GUI/CLI 操作，不要求用户或 Agent 直接调用底层工具。
 - GUI 与 CLI 复用命令、状态和事务；功能同时设计机器可读操作，支持无窗口测试与 Agent 控制。视觉、布局、动画、键盘与触摸交互作为产品验收内容。
@@ -29,6 +30,7 @@
 ## 验证
 
 - 按改动运行 `mcpp build`、相关 `mcpp test` 和真实编辑交互检查；区分构建、打包、运行与真机验证。
+- `release-0.0.1` 至少 Linux、Windows、Android、macOS 四端达到设计方案第 10 节的产品级标准：实际安装包、真实设备/原生系统、GUI/CLI 开发闭环及升级恢复均须有证据。未测、跳过、仅编译、Wine 或模拟器均不能替代必需原生/真机验收。
 - Linux：本地构建和 GUI 验证；GTK 等依赖由 HuxerUI 的 mcpp 规则解析，不假定系统开发包已安装。
 - Windows：交叉构建后用 Wine 验证启动与交互，不能替代原生 Windows 验证。
 - Android：构建 APK，先用 `adb devices -l` 确认设备就绪，再安装测试；关注 IME、触摸选择、软键盘、后台恢复。不得把 USB 可见当成 ADB 可用。

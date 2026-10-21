@@ -1,5 +1,15 @@
 # meditor
 
-A lightweight modern editor dedicated to mcpp and C++ Modules.
+A lightweight modern editor for mcpp and C++ Modules, built with C++23 Modules and HuxerUI.
 
-Version 0.0.1 is developed and reviewed in PR #1 on `release-0.0.1`.
+GUI and CLI share one application core. Linux, Windows, Android and macOS are the required product targets.
+
+Version 0.0.1 is under development in [PR #1](https://github.com/speak-agent/meditor/pull/1), on `release-0.0.1`.
+
+Build the current CLI with [mcpp](https://github.com/mcpp-community/mcpp):
+
+```sh
+mcpp build
+```
+
+[Design and acceptance criteria](.agnets/docs/2026-10-22-meditor-project-design.md) · [Development rules](AGENTS.md)
