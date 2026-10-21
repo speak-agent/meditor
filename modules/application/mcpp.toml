@@ -1,0 +1,18 @@
+[package]
+name = "meditor-application"
+version = "0.0.1"
+standard = "c++23"
+license = "MIT"
+
+[lib]
+path = "src/application.cppm"
+
+[build]
+sources = ["src/*.cppm", "src/*.cpp"]
+
+[dependencies]
+meditor-document = { path = "../document" }
+meditor-platform = { path = "../platform" }
+
+[dependencies.nlohmann]
+json = "=3.12.0"

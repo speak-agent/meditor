@@ -1,0 +1,11 @@
+[package]
+name = "meditor-document"
+version = "0.0.1"
+standard = "c++23"
+license = "MIT"
+
+[lib]
+path = "src/document.cppm"
+
+[build]
+sources = ["src/*.cppm", "src/*.cpp"]

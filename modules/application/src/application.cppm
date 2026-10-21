@@ -1,0 +1,19 @@
+export module meditor.application;
+import std;
+import nlohmann.json;
+import meditor.document;
+
+export namespace meditor {
+using Json = nlohmann::json;
+class Application {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+public:
+    explicit Application(std::filesystem::path workspace = std::filesystem::current_path(), std::filesystem::path toolRoot = {});
+    ~Application();
+    Application(const Application&) = delete;
+    Json execute(const Json& request);
+    Json capabilities() const;
+    std::string session_id() const;
+};
+}
