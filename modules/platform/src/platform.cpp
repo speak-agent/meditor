@@ -29,7 +29,10 @@ struct Process::Impl {
 Process::Process() : impl_(std::make_unique<Impl>()) {}
 Process::~Process() { terminate(); }
 Process::Process(Process&&) noexcept = default;
-Process& Process::operator=(Process&&) noexcept = default;
+Process& Process::operator=(Process&& other) noexcept {
+    if (this != &other) { terminate(); impl_ = std::move(other.impl_); }
+    return *this;
+}
 #if defined(_WIN32)
 namespace {
 std::wstring wide(std::string_view text) {
