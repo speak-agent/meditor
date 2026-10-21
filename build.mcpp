@@ -1,0 +1,36 @@
+import std;
+import mcpp;
+import meditor.distribution;
+
+int main() {
+    try {
+        const auto root = std::filesystem::path(mcpp::manifest_dir());
+        const auto target = meditor::distribution::payload_target(mcpp::target_arch(), mcpp::target_os(), mcpp::target_env());
+        if (target.empty()) return 0;
+        const auto directory = root / "target/payloads";
+        mcpp::rerun_if_changed((directory / target / "inventory.json").string().c_str());
+        const auto plan = meditor::distribution::plan(directory / target, target, !std::string_view(mcpp::pack_format()).empty());
+        if (plan.files.empty()) return 0;
+        const auto script = root / "scripts/prepare_payloads.py";
+        const auto manifest = root / "packaging/tools.json";
+        const auto stamp = std::filesystem::path(mcpp::out_dir()) / "tools-verified.json";
+        mcpp::action verification;
+        verification.id = "verify-native-tools"; verification.role = "source";
+        verification.description = "verify complete pinned tool payload";
+#if defined(_WIN32)
+        verification.arg("python");
+#else
+        verification.arg("python3");
+#endif
+        verification.arg(script.string().c_str()).arg("--target").arg(target.c_str())
+            .arg("--directory").arg(directory.string().c_str()).arg("--verify").arg("--stamp").arg(stamp.string().c_str())
+            .input(script.string().c_str()).input(manifest.string().c_str()).input(plan.receipt.string().c_str());
+        for (const auto& file : plan.files) {
+            verification.input(file.source.string().c_str());
+            mcpp::deploy(file.source.string().c_str(), std::filesystem::path(file.destination).parent_path().generic_string().c_str());
+        }
+        verification.output(stamp.string().c_str()).submit();
+        mcpp::deploy(stamp.string().c_str(), "tools");
+        return 0;
+    } catch (const std::exception& error) { std::println(std::cerr, "meditor delivery: {}", error.what()); return 1; }
+}

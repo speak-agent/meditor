@@ -1,5 +1,5 @@
 [workspace]
-members = ["modules/document", "modules/platform", "modules/application", "apps/gui"]
+members = ["modules/document", "modules/platform", "modules/application", "modules/distribution", "apps/gui"]
 
 [workspace.package]
 mcpp = ">=2026.10.10.1"
@@ -38,6 +38,13 @@ toolchain = "android-ndk@30.0.16248370"
 [workspace.target.wasm32-emscripten]
 toolchain = "emsdk@6.0.9"
 
+[features]
+test-support = []
+
 [targets.meditor-test-tool]
 kind = "bin"
+required_features = ["test-support"]
 main = "tests/support/tool.cpp"
+
+[build-dependencies]
+meditor-distribution = { path = "modules/distribution" }

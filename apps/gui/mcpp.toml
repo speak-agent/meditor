@@ -9,6 +9,9 @@ platforms = ["linux", "windows", "macos", "android", "ios", "emscripten"]
 meditor-application = { path = "../../modules/application" }
 huxerui.huxerui = { git = "https://github.com/Sunrisepeak/HuxerUI.git", branch = "meditor" }
 
+[target.'cfg(any(os = "windows", os = "macos", all(os = "linux", not(env = "android"))))'.dependencies]
+meditor = { path = "../..", artifacts = ["meditor"] }
+
 [dependencies.nlohmann]
 json = "=3.12.0"
 
