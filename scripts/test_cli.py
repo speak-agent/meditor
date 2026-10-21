@@ -75,8 +75,20 @@ def main():
             assert request("unknown.command", ok=False)["code"] == "unknown-command"
             process.stdin.write("not JSON\n"); process.stdin.flush()
             assert json.loads(process.stdout.readline())["error"]["code"] == "invalid-json"
-        finally:
+            process.stdin.write(" " * (8 * 1024 * 1024 + 1) + "\n"); process.stdin.flush()
+            assert json.loads(process.stdout.readline())["error"]["code"] == "request-too-large"
+            assert request("doctor")["tools"]["mcpp"]["available"]
+            boundary = json.dumps({"id": "boundary", "command": "doctor"})
+            process.stdin.write(" " * (8 * 1024 * 1024 - len(boundary)) + boundary + "\n"); process.stdin.flush()
+            reply = json.loads(process.stdout.readline())
+            assert reply["ok"] and reply["requestId"] == "boundary"
+            process.stdin.write(json.dumps({"id": "final", "command": "doctor"}))
             process.stdin.close()
+            reply = json.loads(process.stdout.readline())
+            assert reply["ok"] and reply["requestId"] == "final"
+        finally:
+            if not process.stdin.closed:
+                process.stdin.close()
             process.wait(timeout=20)
             errors = process.stderr.read()
             assert process.returncode == 0 and not errors

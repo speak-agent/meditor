@@ -2,6 +2,29 @@ import std;
 import nlohmann.json;
 import meditor.application;
 
+namespace {
+enum class RequestLine { End, Ready, TooLarge };
+RequestLine read_request_line(std::istream& input, std::string& line) {
+    constexpr std::size_t MAX_REQUEST_BYTES {8 * 1024 * 1024};
+    line.clear();
+    bool oversized {}, consumed {};
+    auto* buffer = input.rdbuf();
+    for (;;) {
+        const auto value = buffer->sbumpc();
+        if (std::char_traits<char>::eq_int_type(value, std::char_traits<char>::eof())) {
+            if (!consumed) return RequestLine::End;
+            break;
+        }
+        consumed = true;
+        const auto character = std::char_traits<char>::to_char_type(value);
+        if (character == '\n') break;
+        if (line.size() < MAX_REQUEST_BYTES) line += character;
+        else oversized = true;
+    }
+    return oversized ? RequestLine::TooLarge : RequestLine::Ready;
+}
+}
+
 int main(int argc, char** argv) {
     using meditor::Json;
     try {
@@ -26,8 +49,13 @@ int main(int argc, char** argv) {
         if (trust) application.execute({{"command", "workspace.trust"}, {"params", {{"allow", true}}}});
         if (serve) {
             std::string line;
-            while (std::getline(std::cin, line)) {
-                if (line.size() > 8 * 1024 * 1024) { std::println("{}", Json({{"schemaVersion", 1}, {"ok", false}, {"error", {{"code", "request-too-large"}}}}).dump()); continue; }
+            for (;;) {
+                const auto state = read_request_line(std::cin, line);
+                if (state == RequestLine::End) break;
+                if (state == RequestLine::TooLarge) {
+                    std::println("{}", Json({{"schemaVersion", 1}, {"ok", false}, {"error", {{"code", "request-too-large"}}}}).dump());
+                    std::cout.flush(); continue;
+                }
                 try { std::println("{}", application.execute(Json::parse(line)).dump()); }
                 catch (...) { std::println("{}", Json({{"schemaVersion", 1}, {"ok", false}, {"error", {{"code", "invalid-json"}}}}).dump()); }
                 std::cout.flush();
