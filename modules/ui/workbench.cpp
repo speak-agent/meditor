@@ -182,6 +182,8 @@ View workbench() {
         auto save = [data, run, refresh] {
             if (data->active.empty()) return;
             auto current = run("document.read", {{"document", data->active}});
+            if (!current.value("ok", false)) { refresh(); return; }
+            if (current["data"]["format"].value("loneCarriageReturns", false)) { data->notice("editor.unsupportedLineEndings"); refresh(); return; }
             auto result = run("document.save", {{"document", data->active}, {"revision", current["data"]["revision"]}});
             if (result.value("ok", false)) data->notice("status.saved");
             refresh();
@@ -260,7 +262,7 @@ View workbench() {
                 return Button(name).Key(id).With(Background(data->active == id ? Color::Rgb(54, 69, 98) : pane)).OnClick([data, id, refresh] { data->active = id; refresh(); });
             })}.With(Padding(8), Spacing(6), Background(pane));
             auto toolbar = Flow {
-                Button(t("action.save")).Key("action-save").OnClick(save),
+                Button(t("action.save")).Key("action-save").With(Enabled(!data->active.empty() && !data->editors.at(data->active)->text_format().loneCarriageReturns)).OnClick(save),
                 Button(t("action.undo")).Key("action-undo").OnClick([data] { if (!data->active.empty()) data->editors.at(data->active)->undo(); }),
                 Button(t("action.redo")).Key("action-redo").OnClick([data] { if (!data->active.empty()) data->editors.at(data->active)->redo(); }),
                 Button(t("action.build")).Key("action-build").With(Enabled(!data->busy)).OnClick([executeTask] { executeTask("build"); }),

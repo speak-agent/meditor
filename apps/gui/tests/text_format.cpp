@@ -126,6 +126,11 @@ int main() {
     huxerui::Application readonly(meditor::ui::workbench, {.show_debug_overlay = false}); UiTest readonlyUi(readonly, {.viewport = {390, 844}}); readonlyUi.Pump();
     readonlyUi.Find(UiSelector::Key("explorer-toggle")).Tap();
     require(readonlyUi.Find(UiSelector::Key("format-read-only")).One().in_viewport);
+    require(!readonlyUi.Find(UiSelector::Key("action-save")).One().enabled);
+    std::filesystem::last_write_time(root / "legacy.cppm", std::filesystem::file_time_type::clock::now() - std::chrono::hours(24));
+    const auto modified = std::filesystem::last_write_time(root / "legacy.cppm");
+    readonlyUi.PressKey(Key::S, {.control = true});
+    require(std::filesystem::last_write_time(root / "legacy.cppm") == modified);
     require(read(root / "legacy.cppm") == "a\rb");
     std::println("GUI BOM/CRLF preservation, mixed batches, composition rollback and read-only legacy data: passed");
 }
