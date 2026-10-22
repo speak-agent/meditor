@@ -3,7 +3,12 @@
 import std;
 import meditor.launch;
 namespace {
-void require(bool value) { if (!value) throw std::runtime_error("Launch routing contract failed"); }
+void require(bool value, std::source_location at = std::source_location::current()) {
+    if (!value) {
+        std::cerr << "Launch routing contract failed at line " << at.line() << '\n';
+        std::exit(1);
+    }
+}
 }
 int main() {
     const auto root = std::filesystem::temp_directory_path() / ("meditor-launch-" + std::to_string(std::random_device{}()));

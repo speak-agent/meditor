@@ -45,7 +45,7 @@ LaunchRequest parse_launch(std::span<const std::string_view> arguments, const st
         } else {
             if (!workspace) workspace = path.parent_path();
             file = path.lexically_relative(*workspace);
-            if (file->empty() || file->is_absolute() || file->generic_string().starts_with("../")) throw std::invalid_argument("File is outside the workspace");
+            if (file->empty() || file->is_absolute() || file->generic_u8string().starts_with(u8"../")) throw std::invalid_argument("File is outside the workspace");
         }
     }
     if (file && !workspace) workspace = absolute(directory);
