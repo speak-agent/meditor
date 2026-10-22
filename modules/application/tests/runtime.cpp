@@ -28,6 +28,8 @@ int main() {
     meditor::write_file_atomic(first.settings_file(), "synthetic settings checkpoint");
     const auto moved = temporary / "relocated package";
     std::filesystem::rename(package, moved); package = moved;
+    rejected([&] { first.prepare_tools(); });
+    require(!std::filesystem::exists(first.installationRoot));
     const auto second = meditor::RuntimeDirectories::resolve({.binaryDirectory = package / "bin"});
     require(second.dataRoot != first.dataRoot);
     require(meditor::read_file(second.settings_file()) == "synthetic settings checkpoint");
@@ -39,6 +41,8 @@ int main() {
     meditor::write_file_atomic(package / "portable.json", R"({"schemaVersion":1,"dataDirectory":"../outside"})");
     rejected([&] { meditor::RuntimeDirectories::resolve({.binaryDirectory = package / "bin"}); });
     rejected([&] { meditor::RuntimeDirectories::resolve({.binaryDirectory = package / "bin", .dataRoot = temporary / "outside"}); });
+    meditor::write_file_atomic(package / "portable.json", R"({"schemaVersion":1,"dataDirectory":"data/../outside"})");
+    rejected([&] { meditor::RuntimeDirectories::resolve({.binaryDirectory = package / "bin"}); });
     meditor::write_file_atomic(package / "portable.json", R"({"schemaVersion":1})");
     meditor::write_file_atomic(package / "bin/portable.json", R"({"schemaVersion":1})");
     rejected([&] { meditor::RuntimeDirectories::resolve({.binaryDirectory = package / "bin"}); });

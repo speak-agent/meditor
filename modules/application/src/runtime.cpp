@@ -22,7 +22,16 @@ std::filesystem::path portable_data(const std::filesystem::path& marker) {
     const auto path = std::filesystem::u8path(name);
     if (name.empty() || name.find_first_of("\\:") != std::string::npos || name.find('\0') != std::string::npos || path.is_absolute() || path.has_root_name())
         throw std::runtime_error("Portable data directory must be a relative path");
-    for (const auto& part : path) if (part == ".." || part == ".") throw std::runtime_error("Portable data directory escapes its root");
+    // The portable format uses '/' on every host. Validate its components
+    // directly; some NDK std modules do not expose path::iterator comparison.
+    std::size_t start {};
+    for (;;) {
+        const auto end = name.find('/', start);
+        const auto part = std::string_view(name).substr(start, end == std::string::npos ? name.size() - start : end - start);
+        if (part == ".." || part == ".") throw std::runtime_error("Portable data directory escapes its root");
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
     return path;
 }
 bool inside(const std::filesystem::path& root, const std::filesystem::path& path) {
@@ -30,6 +39,8 @@ bool inside(const std::filesystem::path& root, const std::filesystem::path& path
     return !relative.empty() && relative != "." && *relative.begin() != ".." && !relative.is_absolute();
 }
 void validate_storage(const RuntimeDirectories& directories) {
+    if (directories.portable && !std::filesystem::is_directory(directories.installationRoot))
+        throw std::runtime_error("Portable installation moved; reopen it from its new location");
     const auto root = std::filesystem::weakly_canonical(directories.dataRoot);
     if (root != directories.dataRoot || (directories.portable && !inside(directories.installationRoot, root)))
         throw std::runtime_error("Application data directory changed its storage boundary");
