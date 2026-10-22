@@ -59,7 +59,9 @@ sources = ["src/*.cpp", "src/*.cppm"]
                 while result is None:
                     assert time.monotonic() < deadline, "Native tool task exceeded its bounded test deadline"
                     result = request("task.wait", {"task": task["task"], "timeoutMs": 120000})
-                assert result["state"] == "succeeded" and result["exitCode"] == 0, (command, result["state"])
+                # The application already redacts exported task output. Keep a
+                # bounded tail so CI failures expose their compiler/tool cause.
+                assert result["state"] == "succeeded" and result["exitCode"] == 0, (command, result["state"], result["exitCode"], result.get("output", "")[-16000:])
                 if command == "run":
                     assert "answer=42" in result["output"]
             document = request("document.open", {"path": "src/core.cppm"})["document"]

@@ -88,12 +88,12 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a python scripts/test_gui_linux.py --screenshot target/evidence/linux-workbench.png
       - name: Retain the synthetic workspace screenshot
-        if: runner.os == 'Linux'
+        if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: linux-workbench
-          path: target/evidence/linux-workbench.png
-          if-no-files-found: error
+          path: target/evidence/linux-workbench*.png
+          if-no-files-found: warn
 
   android-native:
     name: Android native compilation (${{ matrix.target }})
