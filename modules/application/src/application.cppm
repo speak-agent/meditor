@@ -5,6 +5,7 @@ import std;
 import nlohmann.json;
 import meditor.document;
 export import meditor.runtime;
+export import meditor.i18n;
 
 export namespace meditor {
 using Json = nlohmann::json;

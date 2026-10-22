@@ -16,3 +16,6 @@ meditor-platform = { path = "../platform" }
 
 [dependencies.nlohmann]
 json = "=3.12.0"
+
+[build-dependencies]
+meditor-distribution = { path = "../../mcpp/distribution" }

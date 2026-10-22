@@ -36,5 +36,6 @@ void write_file_atomic(const std::filesystem::path& path, std::string_view data)
 std::filesystem::path executable_directory();
 std::filesystem::path user_config_directory();
 std::filesystem::path user_cache_directory();
+std::string system_language_tag();
 std::string redact(std::string text, const std::filesystem::path& workspace = {});
 }

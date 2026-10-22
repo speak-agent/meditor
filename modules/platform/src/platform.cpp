@@ -359,6 +359,20 @@ std::filesystem::path user_cache_directory() {
 #endif
     return base;
 }
+std::string system_language_tag() {
+#if defined(_WIN32)
+    wchar_t name[LOCALE_NAME_MAX_LENGTH] {};
+    if (GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH)) {
+        std::string result;
+        for (const auto ch : name) { if (!ch) break; if (ch > 127) return "en"; result += static_cast<char>(ch); }
+        return result;
+    }
+#else
+    for (const auto* variable : {"LC_ALL", "LC_MESSAGES", "LANG"})
+        if (const auto* value = std::getenv(variable); value && *value) return value;
+#endif
+    return "en";
+}
 std::string redact(std::string text, const std::filesystem::path& workspace) {
     auto replace = [&](std::string_view source, std::string_view target) {
         if (source.size() < 3) return;

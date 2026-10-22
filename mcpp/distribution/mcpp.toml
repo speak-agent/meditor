@@ -3,7 +3,7 @@ name = "meditor-distribution"
 version = "0.0.1"
 standard = "c++23"
 license = "GPL-3.0-only"
-description = "Validated payload placement plans shared by meditor application builds"
+description = "Validated payload placement and embedded resources for meditor application builds"
 
 [lib]
 path = "src/distribution.cppm"

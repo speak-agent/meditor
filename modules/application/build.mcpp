@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Sunrisepeak & mcpp-community
+import std;
+import mcpp;
+import meditor.build.catalogs;
+
+int main() {
+    try {
+        const auto resources = std::filesystem::path(mcpp::manifest_dir()) / "../../resources/i18n";
+        for (const auto* language : {"en", "zh"})
+            mcpp::rerun_if_changed((resources / (std::string(language) + ".json")).string().c_str());
+        const auto output = meditor::build::compile_catalogs(resources, mcpp::out_dir());
+        mcpp::generated(output.string().c_str());
+        return 0;
+    } catch (...) { std::println(std::cerr, "meditor: invalid or unavailable translation catalogs"); return 1; }
+}

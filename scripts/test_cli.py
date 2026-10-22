@@ -53,6 +53,39 @@ def portable_contract(binary, tools, project, root):
     assert failed.returncode != 0 and not (root / "escape").exists()
 
 
+def localization_contract(binary, project, settings_file):
+    common = ["--workspace", str(project), "--settings-file", str(settings_file)]
+
+    def invoke(*arguments, language=None, json_output=False, environment=None):
+        command = [str(binary), *arguments, *common]
+        if language:
+            command += ["--language", language]
+        if json_output:
+            command += ["--format", "json"]
+        return subprocess.run(command, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=15)
+
+    current = json.loads(invoke("settings.get", json_output=True).stdout)["data"]
+    changed = invoke("settings.update", "--params", json.dumps({"revision": current["revision"], "changes": {"language": "zh"}}), json_output=True)
+    assert changed.returncode == 0
+    checkpoint = settings_file.read_bytes()
+    assert "用法" in invoke("--help").stdout
+    assert "Usage:" in invoke("--help", language="en").stdout
+    assert "用法" in invoke("--help", language="zh_CN.UTF-8").stdout
+    assert "Usage:" in invoke("--help", language="fr-FR").stdout
+    assert settings_file.read_bytes() == checkpoint
+    errors = [invoke("unknown.command", language=language, json_output=True) for language in ["en", "zh"]]
+    replies = [json.loads(result.stdout) for result in errors]
+    assert all(result.returncode == 1 for result in errors)
+    assert replies[0]["error"] == replies[1]["error"]
+    assert replies[0]["error"]["code"] == "unknown-command"
+    assert "未知命令" in invoke("unknown.command", language="zh").stderr
+    assert "Unknown command" in invoke("unknown.command", language="en").stderr
+    if os.name != "nt":
+        environment = {**os.environ, "LC_ALL": "zh_CN.UTF-8"}
+        assert "用法" in invoke("--help", language="auto", environment=environment).stdout
+    assert settings_file.read_bytes() == checkpoint
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True, type=Path)
@@ -94,7 +127,7 @@ def main():
             capabilities = request("capabilities")
             assert set(capabilities["commands"]) == set(capabilities["commandSchemas"])
             settings = request("settings.get")
-            assert settings == {"revision": 0, "values": {"theme": "dark", "reducedMotion": False}}
+            assert settings == {"revision": 0, "values": {"theme": "dark", "reducedMotion": False, "language": "auto"}}
             updated = request("settings.update", {"revision": 0, "changes": {"theme": "light"}})
             assert updated["revision"] == 1 and updated["values"]["theme"] == "light"
             assert request("settings.update", {"revision": 0, "changes": {"theme": "dark"}}, ok=False)["code"] == "settings-conflict"
@@ -103,7 +136,7 @@ def main():
             assert request("settings.update", {"revision": 1, "changes": {"unknown": True}}, ok=False)["code"] == "invalid-settings"
             other = subprocess.run([str(binary), "settings.update", "--workspace", str(project), "--settings-file", str(settings_file), "--format", "json", "--params", json.dumps({"revision": 1, "changes": {"reducedMotion": True}})], capture_output=True, text=True, encoding="utf-8", timeout=15)
             assert other.returncode == 0 and json.loads(other.stdout)["data"]["revision"] == 2
-            assert request("settings.get")["values"] == {"theme": "light", "reducedMotion": True}
+            assert request("settings.get")["values"] == {"theme": "light", "reducedMotion": True, "language": "auto"}
             racers = [subprocess.Popen([str(binary), "settings.update", "--workspace", str(project), "--settings-file", str(settings_file), "--format", "json", "--params", json.dumps({"revision": 2, "changes": changes})], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
                       for changes in [{"theme": "dark"}, {"reducedMotion": False}]]
             race_replies = [json.loads(racer.communicate(timeout=15)[0]) for racer in racers]
@@ -177,6 +210,7 @@ def main():
         once = subprocess.run([str(binary), "doctor", "--workspace", str(project), "--tool-root", str(tools), "--format", "json"], capture_output=True, text=True, timeout=20)
         assert once.returncode == 0 and json.loads(once.stdout)["ok"]
         assert str(root) not in once.stdout
+        localization_contract(binary, project, settings_file)
         portable_contract(binary, tools, project, root)
     print("CLI documents, disk conflicts, task execution and LSP framing: passed")
 

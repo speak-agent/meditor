@@ -4,6 +4,7 @@
 import argparse
 import ctypes as c
 import ctypes.util
+import json
 import os
 from pathlib import Path
 import re
@@ -36,6 +37,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path)
     parser.add_argument("--screenshot", type=Path)
+    parser.add_argument("--language", choices=["en", "zh"], default="en")
     args = parser.parse_args()
     if args.binary:
         binary = args.binary.resolve()
@@ -92,6 +94,7 @@ def main():
         source = root / "main.cppm"
         original = "export module demo;\nexport int value() { return 42; }\n"
         source.write_bytes(original.encode())
+        (root / "settings.json").write_text(json.dumps({"schemaVersion": 1, "revision": 1, "values": {"theme": "dark", "reducedMotion": False, "language": args.language}}), encoding="utf-8")
         environment = os.environ.copy(); environment.update(GDK_BACKEND="x11", GSK_RENDERER="cairo")
         process = subprocess.Popen([str(binary), "--workspace", str(root), "--open", "main.cppm", "--settings-file", str(root / "settings.json"), "--data-root", str(root / "runtime")], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         window = None

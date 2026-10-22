@@ -23,6 +23,7 @@ jobs:
           python-version: '3.13'
       - run: python scripts/check_repository.py
       - run: python scripts/check_licenses.py
+      - run: python scripts/check_localization.py
       - run: git diff --check
       - run: python scripts/check_acceptance.py
       - run: python -m unittest discover -s scripts/tests -v
@@ -86,7 +87,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb x11-utils libxtst6 imagemagick
       - name: Exercise native GUI editing and saving
         if: runner.os == 'Linux'
-        run: xvfb-run -a python scripts/test_gui_linux.py --screenshot target/evidence/linux-workbench.png
+        run: |
+          xvfb-run -a python scripts/test_gui_linux.py --language en --screenshot target/evidence/linux-workbench-en.png
+          xvfb-run -a python scripts/test_gui_linux.py --language zh --screenshot target/evidence/linux-workbench-zh.png
       - name: Retain the synthetic workspace screenshot
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v4

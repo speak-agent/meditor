@@ -8,9 +8,9 @@ import meditor.platform;
 namespace meditor {
 namespace {
 using Json = nlohmann::json;
-Json defaults() { return {{"revision", 0}, {"values", {{"theme", "dark"}, {"reducedMotion", false}}}}; }
+Json defaults() { return {{"revision", 0}, {"values", {{"theme", "dark"}, {"reducedMotion", false}, {"language", "auto"}}}}; }
 void validate(const Json& values, bool partial) {
-    if (!values.is_object() || (!partial && values.size() != 2))
+    if (!values.is_object() || (!partial && (!values.contains("theme") || !values.contains("reducedMotion"))))
         throw SettingsError("invalid-settings", "Settings must contain theme and reducedMotion");
     for (const auto& item : values.items()) {
         if (item.key() == "theme") {
@@ -18,6 +18,9 @@ void validate(const Json& values, bool partial) {
                 throw SettingsError("invalid-settings", "Theme must be dark or light");
         } else if (item.key() == "reducedMotion") {
             if (!item.value().is_boolean()) throw SettingsError("invalid-settings", "reducedMotion must be a boolean");
+        } else if (item.key() == "language") {
+            if (!item.value().is_string() || (item.value() != "auto" && item.value() != "en" && item.value() != "zh"))
+                throw SettingsError("invalid-settings", "Language must be auto, en or zh");
         } else throw SettingsError("invalid-settings", "Unknown setting");
     }
 }
@@ -40,6 +43,9 @@ Json SettingsStore::read_() const {
             !stored.contains("revision") || !stored["revision"].is_number_unsigned() ||
             !stored.contains("values")) throw SettingsError("invalid-settings", "Unsupported settings file; original file was preserved");
         validate(stored.at("values"), false);
+        // Schema 1 predates the language preference. Upgrade its view in memory;
+        // reading an older file never changes its bytes or revision.
+        if (!stored["values"].contains("language")) stored["values"]["language"] = "auto";
         stored.erase("schemaVersion");
         return stored;
     } catch (const nlohmann::json::exception&) {

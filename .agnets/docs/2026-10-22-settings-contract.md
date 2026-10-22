@@ -1,6 +1,6 @@
 # Local settings contract
 
-The application core exposes `settings.get` and `settings.update` to both frontends. The initial settings are `theme: "dark"` and `reducedMotion: false`. Theme accepts `dark` or `light`; unknown settings and invalid values are rejected before writing.
+The application core exposes `settings.get` and `settings.update` to both frontends. The initial settings are `theme: "dark"` and `reducedMotion: false` and `language: "auto"`. Theme accepts `dark` or `light`; unknown settings and invalid values are rejected before writing.
 
 ```json
 {"command":"settings.update","params":{"revision":0,"changes":{"theme":"light","reducedMotion":true}}}
@@ -14,4 +14,4 @@ Desktop defaults use the platform user configuration directory: Windows roaming 
 
 `--settings-file FILE` selects an explicit store for the GUI or CLI; automated tests always use isolated synthetic stores. Results omit the file's absolute path. Opening the GUI settings panel reloads preferences; conflicting edits reload the current values without overwriting them. This store does not implement GUI/CLI document-session IPC or continuous cross-process settings notifications.
 
-The bottom Settings entry is available on welcome and workspace screens. Theme changes use the existing short transition; reduced motion bypasses that transition and is inherited by descendant theme controls. The panel supports scrolling, its Back action, the bottom toggle and Escape. More settings, i18n and the command-panel entry remain separate implementation work.
+The bottom Settings entry is available on welcome and workspace screens. Theme changes use the existing short transition; reduced motion bypasses that transition and is inherited by descendant theme controls. The panel supports scrolling, its Back action, the bottom toggle and Escape. Language choices auto/en/zh use the same revisioned store; legacy stores receive the auto default in memory. More settings and the command-panel entry remain separate implementation work.
