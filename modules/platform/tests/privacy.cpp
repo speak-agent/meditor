@@ -9,6 +9,11 @@ int main() {
     require(value.find("abc123") == std::string::npos);
     require(value.find("secret") == std::string::npos);
     require(value.find("hidden") == std::string::npos);
+    auto unicodeWorkspace = std::filesystem::temp_directory_path() / std::filesystem::u8path("中文 workspace");
+    require(meditor::redact("Document does not exist", unicodeWorkspace) == "Document does not exist");
+    require(meditor::redact(meditor::path_to_utf8(unicodeWorkspace) + "/main.cppm", unicodeWorkspace) == "<workspace>/main.cppm");
+    const auto native = unicodeWorkspace.u8string();
+    require(meditor::redact(std::string(reinterpret_cast<const char*>(native.data()), native.size()), unicodeWorkspace) == "<workspace>");
     auto root = std::filesystem::temp_directory_path() / ("meditor-test-" + std::to_string(std::random_device{}()));
     std::filesystem::create_directory(root);
     try {

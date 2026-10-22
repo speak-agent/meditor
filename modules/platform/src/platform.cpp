@@ -382,7 +382,11 @@ std::string redact(std::string text, const std::filesystem::path& workspace) {
         if (source.size() < 3) return;
         for (std::size_t at = 0; (at = text.find(source, at)) != std::string::npos; at += target.size()) text.replace(at, source.size(), target);
     };
-    if (!workspace.empty()) { replace(workspace.string(), "<workspace>"); replace(workspace.generic_string(), "<workspace>"); }
+    if (!workspace.empty()) {
+        const auto native = workspace.u8string();
+        replace(std::string_view(reinterpret_cast<const char*>(native.data()), native.size()), "<workspace>");
+        replace(path_to_utf8(workspace), "<workspace>");
+    }
     for (const char* variable : {"HOME", "USERPROFILE", "TMPDIR"}) if (auto value = std::getenv(variable)) replace(value, variable == std::string_view("TMPDIR") ? "<temp>" : "<home>");
     for (const char* variable : {"USER", "USERNAME", "HOSTNAME", "COMPUTERNAME"}) if (auto value = std::getenv(variable)) replace(value, "<identity>");
     text = std::regex_replace(text, std::regex(R"((https?://)[^/\s:@]+:[^/\s@]+@)"), "$1<credentials>@");
