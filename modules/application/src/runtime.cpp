@@ -44,8 +44,13 @@ void validate_storage(const RuntimeDirectories& directories) {
     const auto root = std::filesystem::weakly_canonical(directories.dataRoot);
     if (root != directories.dataRoot || (directories.portable && !inside(directories.installationRoot, root)))
         throw std::runtime_error("Application data directory changed its storage boundary");
-    for (const auto* name : {"mcpp", "cache/mcppls", "temp", "settings.json"}) {
-        if (!inside(root, std::filesystem::weakly_canonical(root / name)))
+    if (!inside(root, std::filesystem::weakly_canonical(root / "settings.json")))
+        throw std::runtime_error("Application settings escape their storage boundary");
+    const auto tools = std::filesystem::weakly_canonical(directories.toolRoot);
+    if (tools != directories.toolRoot || (directories.portable && tools != root))
+        throw std::runtime_error("Application tool directory changed its storage boundary");
+    for (const auto* name : {"mcpp", "cache/mcppls", "temp"}) {
+        if (!inside(tools, std::filesystem::weakly_canonical(tools / name)))
             throw std::runtime_error("Application data entry escapes its storage boundary");
     }
 }
@@ -74,6 +79,12 @@ RuntimeDirectories RuntimeDirectories::resolve(const RuntimeOptions& options) {
     }
     if (result.portable && !inside(result.installationRoot, result.dataRoot))
         throw std::runtime_error("Portable data must stay within its installation root");
+    result.toolRoot = result.dataRoot;
+    if (!result.portable && options.dataRoot.empty()) {
+        const auto cache = user_cache_directory();
+        if (cache.empty()) throw std::runtime_error("Application tools require a platform cache adapter");
+        result.toolRoot = std::filesystem::weakly_canonical(cache / "meditor");
+    }
     validate_storage(result);
     return result;
 }
@@ -81,17 +92,17 @@ std::filesystem::path RuntimeDirectories::settings_file() const { return dataRoo
 ProcessEnvironment RuntimeDirectories::tool_environment() const {
     validate_storage(*this);
     ProcessEnvironment values {
-        {"MCPP_HOME", utf8(dataRoot / "mcpp")},
-        {"MCPPLS_CACHE_DIR", utf8(dataRoot / "cache/mcppls")},
-        {"TMPDIR", utf8(dataRoot / "temp")},
-        {"TEMP", utf8(dataRoot / "temp")},
-        {"TMP", utf8(dataRoot / "temp")},
+        {"MCPP_HOME", utf8(toolRoot / "mcpp")},
+        {"MCPPLS_CACHE_DIR", utf8(toolRoot / "cache/mcppls")},
+        {"TMPDIR", utf8(toolRoot / "temp")},
+        {"TEMP", utf8(toolRoot / "temp")},
+        {"TMP", utf8(toolRoot / "temp")},
     };
     return values;
 }
 void RuntimeDirectories::prepare_tools() const {
     validate_storage(*this);
-    for (const auto& directory : {dataRoot / "mcpp", dataRoot / "cache/mcppls", dataRoot / "temp"})
+    for (const auto& directory : {toolRoot / "mcpp", toolRoot / "cache/mcppls", toolRoot / "temp"})
         std::filesystem::create_directories(directory);
 }
 }

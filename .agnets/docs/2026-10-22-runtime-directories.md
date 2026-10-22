@@ -15,8 +15,12 @@ installation root; canonical path checks reject data entries that resolve out of
 their boundary. An explicit installed data root may live elsewhere. Without an
 override, installed data uses the platform user configuration directory.
 
-The layout separates `settings.json`, `mcpp/`, `cache/mcppls/` and `temp/` under
-the data root. Preparing tool directories is an explicit operation. The environment
+Portable mode and an explicit `--data-root` separate `settings.json`, `mcpp/`,
+`cache/mcppls/` and `temp/` under the selected data root. The installed default
+keeps settings under the platform configuration directory and tool state under
+the platform cache directory: XDG cache on Linux, Library/Caches on macOS and
+local application data on Windows. Configuration and cache paths resolve
+independently; Windows reads both through the wide-character environment API. Preparing tool directories is an explicit operation. The environment
 mapping sets `MCPP_HOME`, `MCPPLS_CACHE_DIR`, `TMPDIR`, `TEMP` and `TMP` for the
 selected root. Environment path values use UTF-8, including on Windows.
 
@@ -67,3 +71,21 @@ typing and remains unverified there. The test now checks focus before each key,
 stops injection on focus loss, releases its pressed keys during cleanup and
 captures a failure screenshot when requested. This isolates automated window
 interaction from the desktop session; it does not certify native IME behavior.
+
+The first installed-home integration run passed Linux, Windows and both Android
+compile jobs, but failed the macOS real-backend build. Its default configuration
+path included `Application Support`; mcpp 2026.10.21.1 emitted an unquoted scanner
+program path. A fresh Linux tool home with spaces reproduced the same failure.
+The fresh Linux real-backend regression passes with the new installed cache
+layout, including Modules build/run/test and LSP symbols/diagnostics/graph.
+Installed tool state now uses the platform cache location, while settings keep
+the configuration location. This also prevents large compiler caches from being
+stored in roaming configuration on Windows. Explicit and portable roots remain
+self-contained, with no fallback write outside their selected boundary.
+
+**Open release requirement:** the pinned mcpp does not yet build reliably from
+tool homes containing spaces. The editor must not rewrite generated Ninja files,
+patch tool binaries or silently redirect portable state outside its package.
+Installation paths, user names and custom roots containing spaces remain a
+real-backend compatibility gate pending an upstream-compatible solution and
+retest. Configuration-only portable relocation tests do not cover this defect.

@@ -13,6 +13,7 @@ struct RuntimeOptions {
 struct RuntimeDirectories {
     std::filesystem::path installationRoot;
     std::filesystem::path dataRoot;
+    std::filesystem::path toolRoot;
     bool portable {};
     static RuntimeDirectories resolve(const RuntimeOptions& options = {});
     std::filesystem::path settings_file() const;

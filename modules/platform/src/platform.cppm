@@ -35,5 +35,6 @@ std::string read_file(const std::filesystem::path& path, std::size_t limit = 32 
 void write_file_atomic(const std::filesystem::path& path, std::string_view data);
 std::filesystem::path executable_directory();
 std::filesystem::path user_config_directory();
+std::filesystem::path user_cache_directory();
 std::string redact(std::string text, const std::filesystem::path& workspace = {});
 }

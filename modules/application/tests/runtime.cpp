@@ -32,6 +32,9 @@ int main() {
     require(!std::filesystem::exists(first.installationRoot));
     const auto second = meditor::RuntimeDirectories::resolve({.binaryDirectory = package / "bin"});
     require(second.dataRoot != first.dataRoot);
+    auto escaped = second; escaped.toolRoot = temporary / "outside";
+    rejected([&] { escaped.prepare_tools(); });
+    require(!std::filesystem::exists(escaped.toolRoot));
     require(meditor::read_file(second.settings_file()) == "synthetic settings checkpoint");
     for (const auto& [key, value] : second.tool_environment()) {
         require(value.has_value());
@@ -53,7 +56,14 @@ int main() {
     std::filesystem::remove(package / "portable.json");
     const auto installed = meditor::RuntimeDirectories::resolve({.binaryDirectory = package / "bin", .dataRoot = temporary / "custom data"});
     require(!installed.portable && !std::filesystem::exists(installed.dataRoot));
+    require(installed.toolRoot == installed.dataRoot);
     installed.prepare_tools();
     require(std::filesystem::is_directory(installed.dataRoot / "temp"));
+    const auto defaults = meditor::RuntimeDirectories::resolve({.binaryDirectory = package / "bin"});
+    require(defaults.dataRoot == std::filesystem::weakly_canonical(meditor::user_config_directory() / "meditor"));
+    require(defaults.toolRoot == std::filesystem::weakly_canonical(meditor::user_cache_directory() / "meditor"));
+    const auto environment = defaults.tool_environment();
+    require(std::filesystem::u8path(*environment.at("MCPP_HOME")) == defaults.toolRoot / "mcpp");
+    require(defaults.settings_file() == defaults.dataRoot / "settings.json");
     std::println("Portable markers, relocation, data confinement and explicit installed data roots: passed");
 }

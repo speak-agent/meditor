@@ -57,11 +57,11 @@ jobs:
           path: |
             ~/.mcpp/registry
             ~/.mcpp/git
-            ~/.config/meditor/mcpp
-            ~/Library/Application Support/meditor/mcpp
-            ~/AppData/Roaming/meditor/mcpp
-          key: meditor-managed-homes-v1-${{ runner.os }}-${{ runner.arch }}-mcpp-2026.10.21.1-${{ hashFiles('**/mcpp.toml', 'mcpp.lock') }}
-          restore-keys: meditor-managed-homes-v1-${{ runner.os }}-${{ runner.arch }}-mcpp-2026.10.21.1-
+            ~/.cache/meditor/mcpp
+            ~/Library/Caches/meditor/mcpp
+            ~/AppData/Local/meditor/mcpp
+          key: meditor-managed-homes-v2-${{ runner.os }}-${{ runner.arch }}-mcpp-2026.10.21.1-${{ hashFiles('**/mcpp.toml', 'mcpp.lock') }}
+          restore-keys: meditor-managed-homes-v2-${{ runner.os }}-${{ runner.arch }}-mcpp-2026.10.21.1-
       - name: Install verified compiler driver
         run: python scripts/setup_tools.py --directory "${{ runner.temp }}/meditor-tools"
       - name: Prepare complete verified upstream tool payloads

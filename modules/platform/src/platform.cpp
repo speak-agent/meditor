@@ -311,37 +311,53 @@ std::filesystem::path executable_directory() {
 #endif
     return {};
 }
+namespace {
+#if defined(_WIN32)
+std::filesystem::path environment_directory(const wchar_t* name) {
+    const auto size = GetEnvironmentVariableW(name, nullptr, 0);
+    if (!size) return {};
+    std::wstring value(size, L'\0');
+    const auto count = GetEnvironmentVariableW(name, value.data(), size);
+    if (!count || count >= size) return {};
+    value.resize(count); std::filesystem::path path(value);
+    return path.is_absolute() ? path : std::filesystem::path{};
+}
+#elif !defined(__EMSCRIPTEN__)
+std::filesystem::path environment_directory(const char* name) {
+    const auto* value = std::getenv(name);
+    if (!value || !*value) return {};
+    const auto path = std::filesystem::u8path(value);
+    return path.is_absolute() ? path : std::filesystem::path{};
+}
+#endif
+}
 std::filesystem::path user_config_directory() {
 #if defined(_WIN32)
-    auto environmentPath = [](const wchar_t* name) {
-        const auto size = GetEnvironmentVariableW(name, nullptr, 0);
-        if (!size) return std::filesystem::path{};
-        std::wstring value(size, L'\0');
-        const auto count = GetEnvironmentVariableW(name, value.data(), size);
-        if (!count || count >= size) return std::filesystem::path{};
-        value.resize(count); std::filesystem::path path(value);
-        return path.is_absolute() ? path : std::filesystem::path{};
-    };
-    auto base = environmentPath(L"APPDATA");
-    if (base.empty()) { base = environmentPath(L"USERPROFILE"); if (!base.empty()) base /= "AppData/Roaming"; }
-    return base;
+    auto base = environment_directory(L"APPDATA");
+    if (base.empty()) { base = environment_directory(L"USERPROFILE"); if (!base.empty()) base /= "AppData/Roaming"; }
 #elif defined(__EMSCRIPTEN__)
-    return {};
+    std::filesystem::path base;
+#elif defined(__APPLE__)
+    auto base = environment_directory("HOME"); if (!base.empty()) base /= "Library/Application Support";
 #else
-    auto environmentPath = [](const char* name) {
-        auto value = std::getenv(name);
-        if (!value || !*value) return std::filesystem::path{};
-        auto path = std::filesystem::u8path(value);
-        return path.is_absolute() ? path : std::filesystem::path{};
-    };
-#if defined(__APPLE__)
-    auto base = environmentPath("HOME"); if (!base.empty()) base /= "Library/Application Support";
-#else
-    auto base = environmentPath("XDG_CONFIG_HOME");
-    if (base.empty()) { base = environmentPath("HOME"); if (!base.empty()) base /= ".config"; }
+    auto base = environment_directory("XDG_CONFIG_HOME");
+    if (base.empty()) { base = environment_directory("HOME"); if (!base.empty()) base /= ".config"; }
 #endif
     return base;
+}
+std::filesystem::path user_cache_directory() {
+#if defined(_WIN32)
+    auto base = environment_directory(L"LOCALAPPDATA");
+    if (base.empty()) { base = environment_directory(L"USERPROFILE"); if (!base.empty()) base /= "AppData/Local"; }
+#elif defined(__EMSCRIPTEN__)
+    std::filesystem::path base;
+#elif defined(__APPLE__)
+    auto base = environment_directory("HOME"); if (!base.empty()) base /= "Library/Caches";
+#else
+    auto base = environment_directory("XDG_CACHE_HOME");
+    if (base.empty()) { base = environment_directory("HOME"); if (!base.empty()) base /= ".cache"; }
 #endif
+    return base;
 }
 std::string redact(std::string text, const std::filesystem::path& workspace) {
     auto replace = [&](std::string_view source, std::string_view target) {
