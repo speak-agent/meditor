@@ -21,6 +21,10 @@ int main(int argc, char** argv) {
         }
         meditor::ui::configure(static_cast<int>(pointers.size()), pointers.data());
         return huxerui::RunApplication();
+    } catch (const std::exception& error) {
+        meditor::prepare_cli_console();
+        std::cerr << meditor::i18n::Localizer(meditor::system_language_tag()).text("cli.invalidArguments") << '\n' << error.what() << '\n';
+        return 2;
     } catch (...) {
         meditor::prepare_cli_console();
         std::cerr << meditor::i18n::Localizer(meditor::system_language_tag()).text("cli.invalidArguments") << '\n';
