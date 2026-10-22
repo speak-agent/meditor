@@ -40,6 +40,20 @@ int run_tool(int argc, char** argv) {
     }
     if (mode == "echo") { for (int i = 2; i < argc; ++i) std::println("{}", argv[i]); return 0; }
     if (mode == "fail") return 17;
+    if (mode == "build") {
+        std::ifstream configuration(".meditor-fixture-task-mode"); std::string taskMode; std::getline(configuration, taskMode);
+        if (taskMode == "stream" || taskMode == "stream-fail") {
+            std::println("fixture: compiling"); std::cout.flush();
+            { std::ofstream started(".meditor-fixture-task-started"); started << "started"; }
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+            while (!std::filesystem::exists(".meditor-fixture-task-continue")) {
+                if (std::chrono::steady_clock::now() >= deadline) return 23;
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            std::println("{}", taskMode == "stream-fail" ? "fixture: compilation failed" : "fixture: linked");
+            std::cout.flush(); return taskMode == "stream-fail" ? 17 : 0;
+        }
+    }
     if (mode != "serve") {
         Json args = Json::array(); for (int i = 1; i < argc; ++i) args.push_back(argv[i]);
         std::println("{}", Json({{"arguments", args}}).dump()); return 0;

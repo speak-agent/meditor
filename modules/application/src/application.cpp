@@ -617,6 +617,7 @@ struct Application::Impl {
         if (command.starts_with("document.")) {
             auto& record = this->record(params); auto id = params.at("document").get<std::string>();
             if (command == "document.read") return summary(id, record, true);
+            if (command == "document.status") return summary(id, record);
             if (command == "document.highlight") {
                 const auto start = params.value("startLine", 0LL), count = params.value("maxLines", 100LL);
                 if (start < 0 || count < 1 || count > 1000) throw CommandError("invalid-params", "Invalid highlight line range");
@@ -801,7 +802,7 @@ std::string Application::session_id() const { return impl_->session; }
 const Json& Application::metadata_() {
     static const Json metadata = []() -> Json {
         Json commands = Json::array();
-        for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.canLeave", "workspace.switch", "workspace.files", "workspace.trust", "document.open", "document.read", "document.highlight", "document.find", "document.replace", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.query", "language.result", "language.cancel", "language.navigate", "language.release", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
+        for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.canLeave", "workspace.switch", "workspace.files", "workspace.trust", "document.open", "document.read", "document.status", "document.highlight", "document.find", "document.replace", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.query", "language.result", "language.cancel", "language.navigate", "language.release", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
         commands.push_back("settings.get"); commands.push_back("settings.update");
         Json operations = Json::array(); for (const auto& [name, method] : Impl::query_methods()) operations.push_back(name);
         Json schemas = Json::object();

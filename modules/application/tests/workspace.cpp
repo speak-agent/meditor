@@ -23,6 +23,9 @@ void check_workspace() {
     const auto session = app.session_id();
     auto before = call("workspace.canLeave"); require(before["data"]["canLeave"].get<bool>() && before["workspaceGeneration"] == 1);
     auto document = call("document.open", {{"path", "main.cppm"}})["data"]["document"].get<std::string>();
+    const auto status = call("document.status", {{"document", document}});
+    require(status["ok"] && status["effects"].empty() && !status["data"].contains("text"));
+    require(status["data"]["bytes"] == 5 && status["data"]["revision"] == 1 && !status["data"]["dirty"].get<bool>());
     call("workspace.trust", {{"allow", true}});
     require(call("document.edit", {{"document", document}, {"revision", 1}, {"edits", Json::array({{{"start", 0}, {"end", 0}, {"text", "edited "}}})}})["ok"].get<bool>());
     require(call("workspace.canLeave")["data"]["unsavedDocuments"] == Json::array({document}));

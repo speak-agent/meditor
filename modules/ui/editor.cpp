@@ -53,6 +53,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     struct Baseline { TextEditingValue value; std::vector<LineEnding> endings; bool bom {}; };
     std::optional<Baseline> baseline;
     std::uint64_t documentRevision {};
+    std::string documentPath;
     std::uint64_t compositionSequence {};
     std::string compositionGroup;
     std::string compositionPrefix {"ime-" + std::to_string(std::random_device{}()) + "-"};
@@ -91,6 +92,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         auto response = application->execute({{"command", "document.read"}, {"params", {{"document", document}}}});
         if (!response.value("ok", false)) return;
         auto data = response.at("data"); auto revision = data.at("revision").get<std::uint64_t>();
+        documentPath = data.at("path").get<std::string>();
         if (revision == documentRevision) return;
         language = syntax::detect(data.at("path").get<std::string>());
         presentation = TextPresentation(data.at("text").get<std::string>());
@@ -486,6 +488,7 @@ TextFormat EditorState::text_format() const { return impl_->format; }
 std::string EditorState::language_id() const { return std::string(syntax::language_name(impl_->language)); }
 bool EditorState::highlighting_limited() const { return impl_->syntaxCache.limited(); }
 std::string EditorState::document_id() const { return impl_->document; }
+std::string EditorState::document_path() const { return impl_->documentPath; }
 TextSelection EditorState::selection() const { return impl_->value.selection; }
 std::shared_ptr<TextInputClient> EditorState::text_input_client() const { return impl_; }
 View code_editor(std::shared_ptr<EditorState> state, bool dark) {

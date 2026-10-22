@@ -30,6 +30,7 @@ public:
     bool set_search_results(std::vector<huxerui::TextRange> matches, std::uint64_t revision);
     void clear_search_results();
     std::string document_id() const;
+    std::string document_path() const;
     bool highlighting_limited() const;
     std::string language_id() const;
     TextFormat text_format() const;
