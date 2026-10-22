@@ -48,6 +48,11 @@ int main() {
         };
         commit("export module 世界; // 🙂\n");
         require(read(source) == original);
+        ui.Find(UiSelector::Key("about-entry")).Tap();
+        require(ui.Find(UiSelector::Key("about-panel")).Exists());
+        ui.PressKey(Key::Escape);
+        ui.Find(editor).Tap({.device_kind = deviceKind});
+        require(read(source) == original);
         ui.PressKey(Key::S, {.control = true});
         require(read(source) == "export module 世界; // 🙂\n");
         ui.PressKey(Key::Z, {.control = true});

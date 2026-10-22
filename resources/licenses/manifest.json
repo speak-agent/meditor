@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "components": [
+    {
+      "id": "HuxerUI",
+      "license": "MIT",
+      "repository": "https://github.com/Sunrisepeak/HuxerUI",
+      "revision": "5b2de57c2398c8ed075018818841440dda92ea69",
+      "file": "HuxerUI-LICENSE.txt",
+      "sha256": "30060854588d11759305fe827e11971dbbc90d3aa703acdf2d982d3fa9611b12"
+    },
+    {
+      "id": "nlohmann.json",
+      "license": "MIT",
+      "repository": "https://github.com/nlohmann/json",
+      "revision": "3.12.0",
+      "file": "nlohmann-json-LICENSE.txt",
+      "sha256": "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603"
+    }
+  ]
+}

@@ -3,6 +3,7 @@
 """Validate the shared CLI against the pinned, complete upstream tool payloads."""
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -52,6 +53,11 @@ sources = ["src/*.cpp", "src/*.cppm"]
 
         try:
             assert all(entry["available"] for entry in request("doctor")["tools"].values())
+            about = request("about")
+            if os.environ.get("MEDITOR_SOURCE_COMMIT"):
+                assert about["product"]["sourceCommit"] == os.environ["MEDITOR_SOURCE_COMMIT"]
+            assert all(tool["state"] == "recorded" and tool["version"] == tool["expectedVersion"] for tool in about["tools"])
+            assert all(tool["noticeStatus"] == "present" and tool["licenseText"] for tool in about["tools"])
             for command in ["build", "run", "test"]:
                 task = request(command, {"timeoutMs": 600000})
                 deadline = time.monotonic() + 660

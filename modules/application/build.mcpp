@@ -3,6 +3,8 @@
 import std;
 import mcpp;
 import meditor.build.catalogs;
+import meditor.build.metadata;
+import meditor.distribution;
 
 int main() {
     try {
@@ -11,6 +13,15 @@ int main() {
             mcpp::rerun_if_changed((resources / (std::string(language) + ".json")).string().c_str());
         const auto output = meditor::build::compile_catalogs(resources, mcpp::out_dir());
         mcpp::generated(output.string().c_str());
+        const auto root = resources.parent_path().parent_path();
+        for (const auto* file : {"LICENSE", "LICENSING.md", "mcpp.lock", "packaging/tools.json", "resources/product.json", "resources/licenses/manifest.json", "resources/licenses/HuxerUI-LICENSE.txt", "resources/licenses/nlohmann-json-LICENSE.txt"})
+            mcpp::rerun_if_changed((root / file).string().c_str());
+        mcpp::rerun_if_env_changed("MEDITOR_SOURCE_COMMIT");
+        const auto* revision = std::getenv("MEDITOR_SOURCE_COMMIT");
+        const auto target = meditor::distribution::payload_target(mcpp::target_arch(), mcpp::target_os(), mcpp::target_env());
+        const auto metadata = meditor::build::compile_metadata(root, mcpp::out_dir(), mcpp::package_version(), target, revision ? revision : "",
+            std::string_view(mcpp::target_os()) == "macos" || std::string_view(mcpp::target_os()) == "ios");
+        mcpp::generated(metadata.string().c_str());
         return 0;
-    } catch (...) { std::println(std::cerr, "meditor: invalid or unavailable translation catalogs"); return 1; }
+    } catch (...) { std::println(std::cerr, "meditor: invalid or unavailable embedded resources"); return 1; }
 }

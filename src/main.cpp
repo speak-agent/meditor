@@ -94,6 +94,23 @@ int main(int argc, char** argv) {
             do { result = application.execute({{"command", "task.wait"}, {"params", {{"task", task}, {"timeoutMs", 120000}}}}); } while (!result.value("ok", false) && result.value("error", Json::object()).value("code", "") == "timeout");
         }
         if (json) std::println("{}", result.dump());
+        else if (result.value("ok", false) && command == "about") {
+            const auto& info = result.at("data"); const auto& product = info.at("product");
+            std::println("{} {}\n{}\n{}", product.at("name").get<std::string>(), product.at("version").get<std::string>(), localizer.text(product.at("descriptionId").get<std::string>()), product.at("license").get<std::string>());
+            std::println("{}: {}\n{}: {}", localizer.text("about.contributors"), product.at("contributors").get<std::string>(), localizer.text("about.contact"), product.at("contact").get<std::string>());
+            std::println("{}", product.at("sourceUrl").is_string() ? product.at("sourceUrl").get<std::string>() : product.at("repository").get<std::string>());
+            if (product.at("sourceCommit").is_null()) std::println("{}", localizer.text("about.sourcePending"));
+            std::println("\n{}", localizer.text("about.dependencies"));
+            for (const auto* group : {"libraries", "tools"}) for (const auto& entry : info.at(group)) {
+                const auto version = entry.at("version").is_string() ? entry.at("version").get<std::string>() : localizer.text("about.unknown");
+                std::println("{} · {} · {}", entry.at("id").get<std::string>(), version, entry.at("license").get<std::string>());
+                if (entry.contains("state")) {
+                    const auto state = entry.at("state").get<std::string>();
+                    std::println("  {}", localizer.text(state == "recorded" ? "about.state.recorded" : state == "missing" ? "about.state.missing" : "about.state.unverified"));
+                }
+            }
+            std::println("\n{}", localizer.text("about.scope"));
+        }
         else if (result.value("ok", false)) std::println("{}", result.at("data").dump(2));
         else {
             const auto code = result["error"].value("code", "operation-failed"), id = "error." + code;

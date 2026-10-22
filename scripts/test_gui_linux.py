@@ -51,6 +51,10 @@ def main():
         installed = binary.parent / "licenses/meditor" / license_name
         if not installed.is_file() or installed.read_bytes() != (project_root / license_name).read_bytes():
             raise RuntimeError("Native GUI project license deployment is missing or changed: " + license_name)
+    for name in ["HuxerUI-LICENSE.txt", "nlohmann-json-LICENSE.txt", "manifest.json"]:
+        installed = binary.parent / "licenses/dependencies" / name
+        if not installed.is_file() or installed.read_bytes() != (project_root / "resources/licenses" / name).read_bytes():
+            raise RuntimeError("Native GUI direct dependency notice deployment is missing or changed: " + name)
     def library(name):
         soname = ctypes.util.find_library(name)
         if not soname:

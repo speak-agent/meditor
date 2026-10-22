@@ -41,6 +41,9 @@ struct WorkspaceModel {
     bool dark {true};
     bool reducedMotion {};
     bool settingsOpen {};
+    bool aboutOpen {};
+    Json aboutInfo;
+    std::string licenseId;
     std::uint64_t settingsRevision {};
     bool navigation {true};
     std::optional<FileReference> grant;
@@ -151,12 +154,22 @@ View workbench() {
             refresh();
         };
         auto showSettings = [data, refresh] {
-            data->settingsOpen = !data->settingsOpen;
+            const auto fromAbout = data->aboutOpen;
+            data->aboutOpen = false; data->licenseId.clear();
+            data->settingsOpen = fromAbout || !data->settingsOpen;
             if (data->settingsOpen && data->preferences) {
                 auto result = data->preferences->execute({{"command", "settings.get"}});
                 if (result.value("ok", false)) data->adopt_settings(result["data"]);
                 else data->report_error(result["error"]);
             }
+            refresh();
+        };
+        auto showAbout = [data, refresh] {
+            if (data->aboutOpen) { data->aboutOpen = false; data->licenseId.clear(); refresh(); return; }
+            if (!data->preferences) { data->notice("status.settingsUnavailable"); refresh(); return; }
+            const auto response = data->preferences->execute({{"command", "about"}});
+            if (response.value("ok", false)) { data->aboutInfo = response["data"]; data->aboutOpen = true; data->licenseId.clear(); }
+            else data->report_error(response["error"]);
             refresh();
         };
         auto toggleTheme = [data, updateSettings, transition] {
@@ -277,13 +290,70 @@ View workbench() {
             }.With(Padding(compact ? 20 : 32), Spacing(16), CrossAlign(CrossAxisAlignment::Start))}.Key("settings-panel").With(Grow{1})
                 .On<ViewEvents::BackRequested>([data, refresh] { data->settingsOpen = false; refresh(); });
         }
+        if (data->aboutOpen && data->aboutInfo.is_object()) {
+            const auto& info = data->aboutInfo;
+            const auto& product = info.at("product");
+            auto closeAbout = [data, refresh] { data->aboutOpen = false; data->licenseId.clear(); refresh(); };
+            auto components = info.at("libraries").get<std::vector<Json>>();
+            for (const auto& tool : info.at("tools")) components.push_back(tool);
+            std::string licenseText;
+            if (data->licenseId == "meditor") licenseText = product.at("licenseText").get<std::string>();
+            else for (const auto& item : components) if (item.at("id") == data->licenseId && item.at("licenseText").is_string()) licenseText = item.at("licenseText").get<std::string>();
+            if (!data->licenseId.empty()) {
+                body = Column {
+                    Row {Text(data->licenseId, TextRole::Title).With(Grow{1}), Button(t("about.back")).Key("license-back").OnClick([data, refresh] { data->licenseId.clear(); refresh(); })}.With(Spacing(12)),
+                    ScrollView {SelectionArea {Text(licenseText).Style({.font = Font::Monospace(12)}).Key("license-text")}}.With(Grow{1}),
+                }.Key("license-panel").With(Grow{1}, Padding(compact ? 20 : 32), Spacing(16), CrossAlign(CrossAxisAlignment::Stretch))
+                    .On<ViewEvents::BackRequested>([data, refresh] { data->licenseId.clear(); refresh(); });
+            } else {
+                body = ScrollView {Stack {Column {
+                    Text(t("about.title"), TextRole::Title).With(FontSize(24)),
+                    Text(product.at("name").get<std::string>() + " " + product.at("version").get<std::string>()).Key("about-version"),
+                    Text(t(product.at("descriptionId").get<std::string>())),
+                    Text(t("about.contributors") + ": " + product.at("contributors").get<std::string>()),
+                    SelectionArea {Text(t("about.contact") + ": " + product.at("contact").get<std::string>())},
+                    Row {Button(product.at("license").get<std::string>()).Key("license-meditor").OnClick([data, refresh] { data->licenseId = "meditor"; refresh(); })},
+                    Text(t("about.source"), TextRole::Title),
+                    SelectionArea {Text(product.at("sourceUrl").is_string() ? product.at("sourceUrl").get<std::string>() : product.at("repository").get<std::string>()).With(FontSize(12))},
+                    product.at("sourceCommit").is_null() ? View(Text(t("about.sourcePending"))) : View{},
+                    Text(t("about.dependencies"), TextRole::Title),
+                    Text(t("about.scope")).Key("about-scope").With(Foreground(muted)),
+                    Column {ForEach(components, [data, t, refresh](const Json& item) {
+                        const auto id = item.at("id").get<std::string>();
+                        const auto version = item.at("version").is_string() ? item.at("version").get<std::string>() : t("about.unknown");
+                        const auto complete = item.at("noticeStatus") == "present";
+                        const auto role = item.at("role").get<std::string>();
+                        const auto roleLabel = role == "gui-framework" ? t("about.role.gui-framework") : role == "bundled-tool" ? t("about.role.bundled-tool") : t("about.role.runtime-library");
+                        const auto state = item.value("state", "");
+                        const auto stateLabel = state == "missing" ? t("about.state.missing") : state == "recorded" ? t("about.state.recorded") : t("about.state.unverified");
+                        return Column {
+                            Text(id, TextRole::Title),
+                            Text(t("about.version") + ": " + version).With(FontSize(12)),
+                            Text(roleLabel),
+                            Text(item.at("license").get<std::string>()),
+                            item.contains("state") ? View(Text(stateLabel)) : View{},
+                            SelectionArea {Text(item.at("repository").get<std::string>()).With(FontSize(12))},
+                            complete ? View{} : View(Text(t("about.noticePending"))),
+                            Button(t("about.readLicense")).Key("license-" + id).With(Enabled(complete)).OnClick([data, id, refresh] { data->licenseId = id; refresh(); }),
+                        }.Key("about-component-" + id).With(Spacing(8));
+                    })}.With(Spacing(24)),
+                    Row {Button(t("action.back")).Key("about-back").OnClick(closeAbout)},
+                }.With(Padding(compact ? 20 : 32), Spacing(16), Frame{.max_width = 800}, CrossAlign(CrossAxisAlignment::Stretch)).Key("about-content")}.With(Align(HorizontalAlignment::Center, VerticalAlignment::Start))}.Key("about-panel").With(Grow{1})
+                    .On<ViewEvents::BackRequested>(closeAbout);
+            }
+        }
         auto page = Column {header, Divider(), body,
             Row {Text(data->status_text(), TextRole::Label).Key("status-text").With(Grow{1}),
                 compact ? View{} : View(Text("C++23 · Modules", TextRole::Label).With(Foreground(muted))),
+                Button(t("about.entry")).Key("about-entry").OnClick(showAbout),
                 Button(t("settings.title")).Key("settings-entry").OnClick(showSettings)
             }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))
         }.With(Background(background), Foreground(ink), CrossAlign(CrossAxisAlignment::Stretch))
             .On<ViewEvents::KeyIntercept>([save, data, refresh](const KeyEvent& event) {
+                if (event.type == KeyEventType::Down && event.key == Key::Escape && data->aboutOpen) {
+                    if (!data->licenseId.empty()) data->licenseId.clear(); else data->aboutOpen = false;
+                    refresh(); return true;
+                }
                 if (event.type == KeyEventType::Down && event.key == Key::Escape && data->settingsOpen) { data->settingsOpen = false; refresh(); return true; }
                 if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::S) { save(); return true; } return false;
             });

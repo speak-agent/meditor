@@ -11,6 +11,8 @@ int main() {
         const auto root = std::filesystem::path(mcpp::manifest_dir()) / "../..";
         mcpp::deploy((root / "LICENSE").string().c_str(), "licenses/meditor");
         mcpp::deploy((root / "LICENSING.md").string().c_str(), "licenses/meditor");
+        for (const auto* file : {"HuxerUI-LICENSE.txt", "nlohmann-json-LICENSE.txt", "manifest.json"})
+            mcpp::deploy((root / "resources/licenses" / file).string().c_str(), "licenses/dependencies");
     }
     return huxerui::rules::configure({
         .target = "meditor-gui",

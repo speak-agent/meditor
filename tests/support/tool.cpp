@@ -16,8 +16,7 @@ int main(int argc, char** argv) {
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
-    if (argc == 1) return 0;
-    std::string mode = argv[1];
+    const std::string mode = argc > 1 ? argv[1] : "";
     if (const auto* logDirectory = std::getenv("MEDITOR_FIXTURE_ENV_LOG")) {
         Json environment = Json::object();
         for (const auto* key : {"MCPP_HOME", "MCPPLS_CACHE_DIR", "TMPDIR", "TEMP", "TMP"})
@@ -26,6 +25,7 @@ int main(int argc, char** argv) {
         std::ofstream output(std::filesystem::path(logDirectory) / (mode == "serve" ? "language.json" : "task.json"));
         output << environment.dump();
     }
+    if (argc == 1) return 0;
     if (mode == "sleep") { std::this_thread::sleep_for(std::chrono::seconds(60)); return 0; }
     if (mode == "echo") { for (int i = 2; i < argc; ++i) std::println("{}", argv[i]); return 0; }
     if (mode == "fail") return 17;

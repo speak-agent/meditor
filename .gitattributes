@@ -1,0 +1,4 @@
+/LICENSE text eol=lf
+/LICENSING.md text eol=lf
+/resources/licenses/*.txt -text -whitespace
+/resources/licenses/manifest.json text eol=lf

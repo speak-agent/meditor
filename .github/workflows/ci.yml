@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  MEDITOR_SOURCE_COMMIT: ${{ github.sha }}
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

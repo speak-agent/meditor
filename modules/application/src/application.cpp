@@ -6,6 +6,7 @@ import nlohmann.json;
 import meditor.document;
 import meditor.platform;
 import meditor.settings;
+import meditor.about;
 
 namespace meditor {
 namespace {
@@ -228,6 +229,8 @@ struct Application::Impl {
         tasks.emplace(id, std::move(task)); return {{"task", id}, {"state", "running"}};
     }
     Json dispatch(const std::string& command, const Json& params) {
+        if (command == "about") return about::describe(tools);
+        if (command == "licenses") return about::licenses(tools);
         if (command == "settings.get") return settings->get();
         if (command == "settings.update") {
             if (!params.at("revision").is_number_unsigned() && params.at("revision").get<std::int64_t>() < 0)
@@ -351,7 +354,7 @@ Application::~Application() = default;
 std::string Application::session_id() const { return impl_->session; }
 Json Application::capabilities() const {
     Json commands = Json::array();
-    for (auto name : {"capabilities", "workspace.status", "workspace.files", "workspace.trust", "document.open", "document.read", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
+    for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.files", "workspace.trust", "document.open", "document.read", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
     commands.push_back("settings.get"); commands.push_back("settings.update");
     Json schemas = Json::object();
     for (const auto& name : commands) {

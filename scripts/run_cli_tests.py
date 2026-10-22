@@ -24,6 +24,10 @@ for license_name in ["LICENSE", "LICENSING.md"]:
     installed = binaries["meditor"].parent / "licenses/meditor" / license_name
     if not installed.is_file() or installed.read_bytes() != (root / license_name).read_bytes():
         raise SystemExit("Native CLI project license deployment is missing or changed: " + license_name)
+for name in ["HuxerUI-LICENSE.txt", "nlohmann-json-LICENSE.txt", "manifest.json"]:
+    installed = binaries["meditor"].parent / "licenses/dependencies" / name
+    if not installed.is_file() or installed.read_bytes() != (root / "resources/licenses" / name).read_bytes():
+        raise SystemExit("Native CLI direct dependency notice deployment is missing or changed: " + name)
 command = [sys.executable, str(root / ("scripts/test_native_tools.py" if args.native_tools else "scripts/test_cli.py")), "--binary", str(binaries["meditor"])]
 if not args.native_tools:
     command += ["--fixture", str(binaries["meditor-test-tool"])]

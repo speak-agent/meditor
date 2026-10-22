@@ -2,6 +2,7 @@
 # Copyright (C) 2026 Sunrisepeak & mcpp-community
 """Check the project's confirmed license without relabeling third-party inputs."""
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import tomllib
@@ -12,6 +13,25 @@ CANONICAL_GPL_SHA256 = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9
 
 
 def main():
+    notice_root = ROOT / "resources/licenses"
+    notices = json.loads((notice_root / "manifest.json").read_text(encoding="utf-8"))
+    expected = {"HuxerUI": "https://github.com/Sunrisepeak/HuxerUI", "nlohmann.json": "https://github.com/nlohmann/json"}
+    if notices.get("schemaVersion") != 1 or {item["id"] for item in notices["components"]} != set(expected) or len(notices["components"]) != 2:
+        raise SystemExit("Invalid direct dependency notice inventory")
+    lock = tomllib.loads((ROOT / "mcpp.lock").read_text(encoding="utf-8"))["package"]
+    for notice in notices["components"]:
+        name = notice["file"]
+        if not name or name in {".", ".."} or any(ch in name for ch in "/\\:"):
+            raise SystemExit("Unsafe dependency notice filename")
+        if notice["repository"] != expected[notice["id"]] or notice["license"] != "MIT":
+            raise SystemExit("Unexpected dependency notice source or license")
+        if hashlib.sha256((notice_root / name).read_bytes()).hexdigest() != notice["sha256"]:
+            raise SystemExit("Dependency license text changed: " + notice["id"])
+        if notice["id"] == "HuxerUI":
+            if lock["huxerui.huxerui"]["source"] != "git+" + notice["repository"] + ".git#branch=meditor@" + notice["revision"]:
+                raise SystemExit("Framework notice revision differs from lockfile")
+        elif lock["nlohmann.json"]["version"] != notice["revision"]:
+            raise SystemExit("JSON notice version differs from lockfile")
     license_file = (ROOT / "LICENSE").read_bytes()
     prefix, separator, body = license_file.partition(b"\n---\n\n")
     if not separator or hashlib.sha256(body).hexdigest() != CANONICAL_GPL_SHA256:

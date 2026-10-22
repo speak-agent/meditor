@@ -80,6 +80,9 @@ def localization_contract(binary, project, settings_file):
     assert replies[0]["error"]["code"] == "unknown-command"
     assert "未知命令" in invoke("unknown.command", language="zh").stderr
     assert "Unknown command" in invoke("unknown.command", language="en").stderr
+    summary = invoke("about", language="zh")
+    assert summary.returncode == 0 and "轻量级编辑器" in summary.stdout and "Sunrisepeak & mcpp-community" in summary.stdout
+    assert "GNU GENERAL PUBLIC LICENSE" not in summary.stdout
     if os.name != "nt":
         environment = {**os.environ, "LC_ALL": "zh_CN.UTF-8"}
         assert "用法" in invoke("--help", language="auto", environment=environment).stdout
@@ -122,6 +125,16 @@ def main():
         try:
             assert request("doctor")["tools"]["mcppls"]["available"]
             assert "document.edit" in request("capabilities")["commands"]
+            about = request("about")
+            assert about["product"]["license"] == "GPL-3.0-only"
+            assert about["product"]["contributors"] == "Sunrisepeak & mcpp-community"
+            assert about["product"]["contact"] == "speakshen@163.com"
+            assert all(tool["state"] == "unverified" and tool["version"] is None for tool in about["tools"])
+            declarations = request("licenses")
+            assert declarations["components"][0]["licenseText"] == about["product"]["licenseText"]
+            assert not declarations["complete"] and not declarations["releaseReady"]
+            assert str(root) not in json.dumps(about)
+            assert not receipts.exists(), "About/notice queries must not execute tools"
             assert request("document.open", {"path": "../outside"}, ok=False)["code"] == "invalid-path"
             assert request("document.open", {"path": "missing"}, ok=False)["code"] == "not-found"
             capabilities = request("capabilities")
