@@ -236,6 +236,17 @@ def main():
             request("document.save", {"document": doc, "revision": 4})
             assert source.read_bytes().decode().startswith("import module")
             request("workspace.trust", {"allow": True})
+            switched_project = root / "second 工作区"
+            switched_project.mkdir()
+            (switched_project / "module.cppm").write_text("export module second;", encoding="utf-8")
+            pending = request("build", {"target": "meditor-fixture-long-running"})
+            guard = request("workspace.canLeave")
+            assert not guard["canLeave"] and guard["runningTasks"] == [pending["task"]]
+            switch_params = {"path": str(switched_project), "generation": guard["generation"]}
+            assert request("workspace.switch", switch_params, ok=False)["code"] == "task-busy"
+            request("task.cancel", {"task": pending["task"]})
+            assert request("task.wait", {"task": pending["task"]})["state"] == "cancelled"
+            assert request("workspace.canLeave")["canLeave"]
             task = request("build", {"target": "fixture-target"})
             result = request("task.wait", {"task": task["task"]})
             assert result["state"] == "succeeded" and result["exitCode"] == 0
@@ -250,6 +261,24 @@ def main():
             diagnostics = request("language.diagnostics")
             assert diagnostics[0]["diagnostics"][0]["message"] == "fixture diagnostic"
             assert request("modules.graph", {"document": doc})["modules"][0]["name"] == "fixture"
+            # Switching also stops the live LSP and retains runtime homes and preferences.
+            switched = request("workspace.switch", switch_params)
+            assert switched["changed"] and switched["generation"] == 2
+            assert request("workspace.status")["language"] is None
+            assert not request("workspace.status")["trusted"]
+            assert request("workspace.status")["documents"] == []
+            assert request("document.read", {"document": doc}, ok=False)["code"] == "not-found"
+            assert request("task.status", {"task": task["task"]}, ok=False)["code"] == "not-found"
+            assert request("workspace.switch", switch_params, ok=False)["code"] == "workspace-conflict"
+            new_doc = request("document.open", {"path": "module.cppm"})["document"]
+            assert new_doc != doc
+            assert request("build", ok=False)["code"] == "workspace-untrusted"
+            assert request("settings.get")["revision"] == 3
+            request("workspace.trust", {"allow": True})
+            new_task = request("build")
+            assert new_task["task"] != task["task"]
+            assert request("task.wait", {"task": new_task["task"]})["state"] == "succeeded"
+            assert json.loads((receipts / "task.json").read_text(encoding="utf-8")) == task_environment
             request("language.stop")
             assert request("unknown.command", ok=False)["code"] == "unknown-command"
             process.stdin.write("not JSON\n"); process.stdin.flush()

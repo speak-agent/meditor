@@ -281,6 +281,10 @@ void Process::terminate() {
     if (impl_->output >= 0) { close(impl_->output); impl_->output = -1; }
 #endif
 }
+std::string path_to_utf8(const std::filesystem::path& path) {
+    const auto value = path.generic_u8string();
+    return {reinterpret_cast<const char*>(value.data()), value.size()};
+}
 std::string read_file(const std::filesystem::path& path, std::size_t limit) {
     std::ifstream input(path, std::ios::binary); if (!input) throw std::runtime_error("Could not open the file");
     std::string result; std::array<char, 16384> buffer;

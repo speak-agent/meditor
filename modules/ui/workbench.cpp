@@ -5,6 +5,7 @@ import std;
 import huxerui;
 import meditor.application;
 import meditor.document;
+import meditor.platform;
 import meditor.ui.editor;
 
 namespace meditor::ui {
@@ -39,6 +40,9 @@ struct WorkspaceModel {
     std::string output;
     bool selected {};
     bool busy {};
+    bool choosing {};
+    std::string activeTask;
+    std::uint64_t generation {};
     bool dark {true};
     bool reducedMotion {};
     bool settingsOpen {};
@@ -60,12 +64,28 @@ struct WorkspaceModel {
         dark = state.at("values").at("theme") == "dark";
         reducedMotion = state.at("values").at("reducedMotion").get<bool>();
     }
-    void load(std::filesystem::path root) {
-        auto next = std::make_shared<meditor::Application>(root, initialTools, settingsFile, runtime);
-        auto response = next->execute({{"command", "workspace.files"}});
-        files.clear(); if (response.value("ok", false)) for (const auto& file : response["data"]["files"]) files.push_back(file.get<std::string>());
-        name = root.filename().string(); application = std::move(next); editors.clear(); tabs.clear(); active.clear(); selected = true;
-        notice("status.workspaceOpened");
+    bool load(std::filesystem::path root, std::optional<std::uint64_t> expected = {}) {
+        Json response;
+        auto next = application;
+        if (next) {
+            response = next->execute({{"command", "workspace.switch"}, {"params", {{"path", meditor::path_to_utf8(root)}, {"generation", expected.value_or(generation)}}}});
+            if (!response.value("ok", false)) { report_error(response["error"]); return false; }
+            if (!response["data"].value("changed", false)) return true;
+        } else {
+            next = std::make_shared<meditor::Application>(root, initialTools, settingsFile, runtime);
+            response = next->execute({{"command", "workspace.files"}});
+            if (!response.value("ok", false)) { report_error(response["error"]); return false; }
+        }
+        const auto& listing = application ? response["data"]["listing"] : response["data"];
+        std::vector<std::string> nextFiles;
+        for (const auto& file : listing["files"]) nextFiles.push_back(file.get<std::string>());
+        files.swap(nextFiles);
+        name = application ? response["data"]["name"].get<std::string>() : meditor::path_to_utf8(root.filename());
+        generation = response["workspaceGeneration"].get<std::uint64_t>();
+        application = std::move(next); editors.clear(); tabs.clear(); active.clear(); selected = true;
+        busy = false; activeTask.clear(); output.clear(); searchOpen = false;
+        searchTotal = 0; searchReplaced.reset(); searchErrorKey.clear();
+        notice("status.workspaceOpened"); return true;
     }
 };
 }
@@ -80,8 +100,9 @@ void configure(int argc, char** argv) {
         else if (argument == "--open" && i + 1 < argc) initialDocument = argv[++i];
     }
 }
-View workbench() {
-    return Scope([]() -> View {
+View workbench() { return workbench(WorkspaceServices{}); }
+View workbench(WorkspaceServices services) {
+    return Scope([services = std::move(services)]() -> View {
         auto model = UseState(std::make_shared<WorkspaceModel>());
         auto epoch = UseState(0);
         auto findValue = UseState(TextEditingValue::FromText(""));
@@ -100,12 +121,11 @@ View workbench() {
         auto t = [data](std::string_view id) { return data->messages.text(id); };
         window.OnCloseRequest([data, refresh] {
             if (!data->application) return false;
-            auto state = data->application->execute({{"command", "workspace.status"}});
-            for (const auto& document : state["data"]["documents"]) {
-                if (document.value("dirty", false)) {
-                    data->notice("status.saveBeforeClose");
-                    refresh(); return true;
-                }
+            auto state = data->application->execute({{"command", "workspace.canLeave"}});
+            if (!state.value("ok", false)) { data->report_error(state["error"]); refresh(); return true; }
+            if (!state["data"]["canLeave"].get<bool>()) {
+                data->notice(state["data"]["unsavedDocuments"].empty() ? "error.task-busy" : "status.saveBeforeClose");
+                refresh(); return true;
             }
             return false;
         });
@@ -241,29 +261,46 @@ View workbench() {
             if (data->busy) return;
             auto result = run(command);
             if (!result.is_object() || !result.value("ok", false)) return;
-            auto id = result["data"]["task"].get<std::string>(); data->busy = true; data->notice("status.taskRunning"); refresh();
+            auto id = result["data"]["task"].get<std::string>(); data->activeTask = id;
+            auto application = data->application; auto generation = data->generation; data->busy = true; data->notice("status.taskRunning"); refresh();
             tasks.Launch([=]() -> Task<void> {
                 while (true) {
                     co_await Delay(std::chrono::milliseconds(100));
-                    auto result = run("task.status", {{"task", id}});
-                    if (!result.value("ok", false)) break;
+                    if (data->application != application || data->generation != generation) co_return;
+                    auto result = application->execute({{"command", "task.status"}, {"workspaceGeneration", generation}, {"params", {{"task", id}}}});
+                    if (!result.value("ok", false)) { data->report_error(result["error"]); break; }
                     data->output = result["data"].value("output", "");
                     if (result["data"].value("state", "") != "running") { auto key = "status.task." + result["data"].value("state", ""); data->notice(data->messages.contains(key) ? key : "status.taskFinished"); break; }
                 }
-                data->busy = false; refresh();
+                data->busy = false; data->activeTask.clear(); refresh();
             });
         };
-        auto choose = [data, tasks, picker, refresh] {
+        auto choose = [data, tasks, picker, refresh, services] {
+            if (data->choosing) return;
             if (data->application) {
-                auto state = data->application->execute({{"command", "workspace.status"}});
-                for (const auto& doc : state["data"]["documents"]) if (doc.value("dirty", false)) { data->notice("status.saveBeforeSwitch"); refresh(); return; }
+                auto state = data->application->execute({{"command", "workspace.canLeave"}});
+                if (!state.value("ok", false)) { data->report_error(state["error"]); refresh(); return; }
+                if (!state["data"]["canLeave"].get<bool>()) {
+                    data->notice(state["data"]["unsavedDocuments"].empty() ? "error.task-busy" : "status.saveBeforeSwitch"); refresh(); return;
+                }
             }
+            auto generation = data->generation;
+            data->choosing = true; refresh();
             tasks.Launch([=]() -> Task<void> {
-                auto selected = co_await picker->OpenDirectoryAsync(true);
-                if (!selected) co_return;
-                auto local = selected->AsFile();
-                if (!local) { data->notice("status.providerRequired"); refresh(); co_return; }
-                try { data->load(local->Path()); data->grant = *selected; } catch (...) { data->notice("status.openFailed"); }
+                try {
+                    std::optional<WorkspaceSelection> selection;
+                    if (services.chooseWorkspace) selection = co_await services.chooseWorkspace();
+                    else {
+                        auto selected = co_await picker->OpenDirectoryAsync(true);
+                        if (selected) {
+                            auto local = selected->AsFile();
+                            if (!local) { data->choosing = false; data->notice("status.providerRequired"); refresh(); co_return; }
+                            selection = WorkspaceSelection{std::filesystem::u8path(local->Path()), *selected};
+                        }
+                    }
+                    data->choosing = false;
+                    if (selection && data->load(selection->path, generation)) data->grant = std::move(selection->grant);
+                } catch (...) { data->choosing = false; data->notice("status.openFailed"); }
                 refresh();
             });
         };
@@ -283,7 +320,7 @@ View workbench() {
             body = Column {
                 Text(t("welcome.title"), TextRole::Title).With(FontSize(28)),
                 Text(t("welcome.subtitle")).With(Foreground(muted)),
-                Row {Button(t("workspace.open")).Key("workspace-open").OnClick(choose)}.With(Spacing(10)),
+                Row {Button(t("workspace.open")).Key("workspace-open").With(Enabled(!data->choosing)).OnClick(choose)}.With(Spacing(10)),
                 Text(t("welcome.description")).With(Foreground(muted)),
                 Text(t("welcome.privacy"), TextRole::Label).With(Foreground(muted)),
             }.With(Grow{1}, Padding(40), Spacing(22), MainAlign(MainAxisAlignment::Center), CrossAlign(CrossAxisAlignment::Start));
@@ -297,7 +334,7 @@ View workbench() {
                         return Button(name).Key(name).OnClick([name, open] { open(name); });
                     })}.With(Spacing(2), CrossAlign(CrossAxisAlignment::Stretch))
                 }.With(Grow{1}),
-                Button(t("workspace.change")).OnClick(choose),
+                Button(t("workspace.change")).Key("workspace-change").With(Enabled(!data->choosing)).OnClick(choose),
             }.With(Padding(16), Spacing(12), Background(pane), Frame{.width = compact ? 280.0F : 260.0F}, CrossAlign(CrossAxisAlignment::Stretch));
             View editor = Column {
                 Text(t("workspace.chooseFile"), TextRole::Title),
@@ -318,6 +355,7 @@ View workbench() {
                 Button(t("action.build")).Key("action-build").With(Enabled(!data->busy)).OnClick([executeTask] { executeTask("build"); }),
                 Button(t("action.run")).Key("action-run").With(Enabled(!data->busy)).OnClick([executeTask] { executeTask("run"); }),
                 Button(t("action.test")).Key("action-test").With(Enabled(!data->busy)).OnClick([executeTask] { executeTask("test"); }),
+                Button(t("action.cancelTask")).Key("action-cancel-task").With(Enabled(data->busy)).OnClick([data, run] { if (!data->activeTask.empty()) run("task.cancel", {{"task", data->activeTask}}); }),
                 Button(t("action.trust")).Key("action-trust").OnClick([run] { run("workspace.trust", {{"allow", true}}); }),
             }.With(Padding(8), Spacing(6));
             auto center = Column {toolbar, tabs,

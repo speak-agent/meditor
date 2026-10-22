@@ -17,7 +17,7 @@ struct CommandError : std::runtime_error {
     CommandError(std::string kind, std::string message) : std::runtime_error(std::move(message)), code(std::move(kind)) {}
 };
 std::string make_uri(const std::filesystem::path& path) {
-    auto source = std::filesystem::absolute(path).generic_string();
+    auto source = path_to_utf8(std::filesystem::absolute(path));
     std::string result = source.starts_with('/') ? "file://" : "file:///";
     const char* hex = "0123456789ABCDEF";
     for (unsigned char ch : source) {
@@ -87,12 +87,12 @@ class Language {
     }
 public:
     Language(const std::filesystem::path& tool, const std::filesystem::path& driver, const std::filesystem::path& root, const ProcessEnvironment& environment) {
-        process_.start({tool.string(), "serve"}, root, false, environment);
+        process_.start({path_to_utf8(tool), "serve"}, root, false, environment);
         reader_ = std::jthread([this](std::stop_token stop) { receive_(stop); });
         try {
             auto init = request("initialize", {{"processId", nullptr}, {"rootUri", make_uri(root)}, {"clientInfo", {{"name", "meditor"}, {"version", "0.0.1"}}},
                 {"workspaceFolders", Json::array({{{"uri", make_uri(root)}, {"name", "workspace"}}})},
-                {"initializationOptions", {{"mcpp", driver.string()}, {"toolEnvironment", "editor"}}},
+                {"initializationOptions", {{"mcpp", path_to_utf8(driver)}, {"toolEnvironment", "editor"}}},
                 {"capabilities", {{"general", {{"positionEncodings", Json::array({"utf-16"})}}}, {"workspace", {{"configuration", true}}},
                     {"textDocument", {{"synchronization", {{"didSave", true}}}, {"completion", {{"completionItem", {{"snippetSupport", false}}}}}}},
                     {"experimental", {{"cxxModules", {{"version", 1}, {"status", true}, {"graph", true}, {"contexts", true}}}}}}}}, 30000);
@@ -152,9 +152,10 @@ struct Application::Impl {
     std::unique_ptr<SettingsStore> settings;
     RuntimeDirectories runtime;
     bool trusted {};
+    std::uint64_t workspaceGeneration {1};
     std::uint64_t nextDocument {1}, nextTask {1};
     std::filesystem::path resolve(std::string value) const {
-        std::filesystem::path path(value);
+        auto path = std::filesystem::u8path(value);
         if (path.is_absolute() || value.find('\0') != std::string::npos) throw CommandError("invalid-path", "Use a workspace-relative file path");
         auto resolved = std::filesystem::weakly_canonical(root / path);
         auto relative = resolved.lexically_relative(root);
@@ -181,7 +182,7 @@ struct Application::Impl {
         return result;
     }
     Json open(const Json& params) {
-        auto path = resolve(params.at("path").get<std::string>()); auto name = path.lexically_relative(root).generic_string();
+        auto path = resolve(params.at("path").get<std::string>()); auto name = path_to_utf8(path.lexically_relative(root));
         for (const auto& [id, record] : documents) if (record->path == name) return summary(id, *record);
         bool exists = std::filesystem::exists(path);
         if (!exists && !params.value("create", false)) throw CommandError("not-found", "File does not exist");
@@ -236,7 +237,48 @@ struct Application::Impl {
         });
         tasks.emplace(id, std::move(task)); return {{"task", id}, {"state", "running"}};
     }
+    Json workspace_files(const std::filesystem::path& directory) const {
+        Json result = Json::array(); std::error_code error;
+        auto has_entry = []<class Iterator>(const Iterator& iterator) {
+            if constexpr (requires { iterator != std::default_sentinel; }) return iterator != std::default_sentinel;
+            else return iterator != Iterator{};
+        };
+        for (std::filesystem::recursive_directory_iterator it(directory, std::filesystem::directory_options::skip_permission_denied, error); has_entry(it) && result.size() < 3000; it.increment(error)) {
+            if (error) { error.clear(); continue; }
+            auto name = path_to_utf8(it->path().filename());
+            if (it->is_directory(error) && (name.starts_with('.') || name == "target" || name == "node_modules" || name == "build")) { it.disable_recursion_pending(); continue; }
+            if (it->is_regular_file(error) && !it->is_symlink(error)) result.push_back(path_to_utf8(it->path().lexically_relative(directory)));
+        }
+        return {{"files", result}, {"truncated", result.size() >= 3000}};
+    }
+    Json can_leave() const {
+        Json unsaved = Json::array(), running = Json::array();
+        for (const auto& [id, record] : documents) if (record->document.dirty()) unsaved.push_back(id);
+        for (const auto& [id, task] : tasks) { std::lock_guard lock(task->mutex); if (task->state == "running") running.push_back(id); }
+        return {{"canLeave", unsaved.empty() && running.empty()}, {"generation", workspaceGeneration}, {"unsavedDocuments", unsaved}, {"runningTasks", running}};
+    }
+    Json switch_workspace(const Json& params) {
+        if (params.at("generation").get<std::uint64_t>() != workspaceGeneration) throw CommandError("workspace-conflict", "Workspace changed; read the current generation before switching");
+        auto value = params.at("path").get<std::string>();
+        if (value.empty() || value.find('\0') != value.npos) throw CommandError("invalid-path", "Choose a workspace directory");
+        const auto candidate = std::filesystem::weakly_canonical(root / std::filesystem::u8path(value));
+        if (!std::filesystem::exists(candidate)) throw CommandError("not-found", "Workspace directory does not exist");
+        if (!std::filesystem::is_directory(candidate)) throw CommandError("invalid-path", "Workspace path is not a directory");
+        if (std::filesystem::equivalent(candidate, root)) return {{"changed", false}, {"generation", workspaceGeneration}, {"name", path_to_utf8(root.filename())}};
+        const auto guard = can_leave();
+        if (!guard["unsavedDocuments"].empty()) throw CommandError("unsaved-documents", "Save modified documents before switching workspaces");
+        if (!guard["runningTasks"].empty()) throw CommandError("task-busy", "Wait for or cancel active tasks before leaving this workspace");
+        // Prepare everything that can fail before destroying the old context.
+        std::filesystem::directory_iterator readable(candidate);
+        auto nextRoot = candidate; const auto name = path_to_utf8(candidate.filename());
+        Json result {{"changed", true}, {"generation", workspaceGeneration + 1}, {"name", name}, {"listing", workspace_files(candidate)}};
+        language.reset(); tasks.clear(); documents.clear();
+        root.swap(nextRoot); trusted = false; ++workspaceGeneration;
+        return result;
+    }
     Json dispatch(const std::string& command, const Json& params) {
+        if (command == "workspace.canLeave") return can_leave();
+        if (command == "workspace.switch") return switch_workspace(params);
         if (command == "about") return about::describe(tools);
         if (command == "licenses") return about::licenses(tools);
         if (command == "settings.get") return settings->get();
@@ -247,23 +289,10 @@ struct Application::Impl {
         }
         if (command == "workspace.status") {
             Json docs = Json::array(); for (const auto& [id, record] : documents) docs.push_back(summary(id, *record));
-            return {{"name", root.filename().string()}, {"trusted", trusted}, {"documents", docs}, {"language", language ? language->status() : Json(nullptr)}};
+            return {{"name", path_to_utf8(root.filename())}, {"generation", workspaceGeneration}, {"trusted", trusted}, {"documents", docs}, {"language", language ? language->status() : Json(nullptr)}};
         }
         if (command == "workspace.trust") { trusted = params.at("allow").get<bool>(); if (!trusted) { for (auto& [id, task] : tasks) task->worker.request_stop(); language.reset(); for (auto& [id, record] : documents) record->synced = 0; } return {{"trusted", trusted}}; }
-        if (command == "workspace.files") {
-            Json result = Json::array(); std::error_code error;
-            auto has_entry = []<class Iterator>(const Iterator& iterator) {
-                if constexpr (requires { iterator != std::default_sentinel; }) return iterator != std::default_sentinel;
-                else return iterator != Iterator{};
-            };
-            for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, error); has_entry(it) && result.size() < 3000; it.increment(error)) {
-                if (error) { error.clear(); continue; }
-                auto name = it->path().filename().string();
-                if (it->is_directory(error) && (name.starts_with('.') || name == "target" || name == "node_modules" || name == "build")) { it.disable_recursion_pending(); continue; }
-                if (it->is_regular_file(error) && !it->is_symlink(error)) result.push_back(it->path().lexically_relative(root).generic_string());
-            }
-            return {{"files", result}, {"truncated", result.size() >= 3000}};
-        }
+        if (command == "workspace.files") return workspace_files(root);
         if (command == "document.open") return open(params);
         if (command.starts_with("document.")) {
             auto& record = this->record(params); auto id = params.at("document").get<std::string>();
@@ -384,7 +413,7 @@ struct Application::Impl {
         }
         if (command == "build" || command == "run" || command == "test" || command == "project.new" || command == "package.search" || command == "package.add" || command == "package.remove" || command == "toolchain.list" || command == "toolchain.install" || command == "environment.prepare") {
             if (command == "build" || command == "run" || command == "test") for (auto& [id, record] : documents) if (record->document.dirty()) throw CommandError("unsaved-documents", "Save modified documents before building");
-            std::vector<std::string> args {tool("mcpp").string()};
+            std::vector<std::string> args {path_to_utf8(tool("mcpp"))};
             if (command == "project.new") { auto name = params.at("name").get<std::string>(); resolve(name); if (name.empty() || name.starts_with('-')) throw CommandError("invalid-params", "Invalid project name"); args.insert(args.end(), {"new", name}); }
             else if (command.starts_with("package.")) { auto operation = command.substr(8); args.push_back(operation == "search" ? "search" : operation); auto name = params.at("name").get<std::string>(); if (name.empty() || name.starts_with('-')) throw CommandError("invalid-params", "Invalid package name"); args.push_back(name); }
             else if (command == "toolchain.list") args.insert(args.end(), {"toolchain", "list", "--format", "json"});
@@ -440,7 +469,7 @@ Application::~Application() = default;
 std::string Application::session_id() const { return impl_->session; }
 Json Application::capabilities() const {
     Json commands = Json::array();
-    for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.files", "workspace.trust", "document.open", "document.read", "document.highlight", "document.find", "document.replace", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
+    for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.canLeave", "workspace.switch", "workspace.files", "workspace.trust", "document.open", "document.read", "document.highlight", "document.find", "document.replace", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
     commands.push_back("settings.get"); commands.push_back("settings.update");
     Json schemas = Json::object();
     for (const auto& name : commands) {
@@ -458,6 +487,7 @@ Json Application::capabilities() const {
             if (command == "modules.info") field("name", "string", true);
             if (command == "language.completion" || command == "language.hover" || command == "language.definition" || command == "language.references" || command == "language.signature") field("position", "object", true);
         } else if (command.starts_with("task.")) { field("task", "string", true); field("timeoutMs", "integer"); }
+        else if (command == "workspace.switch") { field("path", "string", true); field("generation", "integer", true); }
         else if (command == "workspace.trust") field("allow", "boolean", true);
         else if (command == "project.new" || command.starts_with("package.")) field("name", "string", true);
         else if (command == "toolchain.install") { field("family", "string", true); field("version", "string", true); }
@@ -471,6 +501,8 @@ Json Application::execute(const Json& request) {
     Json response = {{"schemaVersion", 1}, {"kind", "meditor.result"}, {"kindVersion", 1}, {"session", session_id()}, {"requestId", request.is_object() ? request.value("id", Json(nullptr)) : Json(nullptr)}, {"effects", Json::array()}};
     try {
         if (!request.is_object()) throw CommandError("invalid-params", "Request must be a JSON object");
+        if (request.contains("workspaceGeneration") && (!request["workspaceGeneration"].is_number_integer() || request["workspaceGeneration"].get<std::uint64_t>() != impl_->workspaceGeneration))
+            throw CommandError("workspace-conflict", "Request belongs to an older workspace generation");
         auto command = request.at("command").get<std::string>(); auto params = request.value("params", Json::object());
         if (!params.is_object()) throw CommandError("invalid-params", "Parameters must be an object");
         auto schemas = capabilities().at("commandSchemas");
@@ -491,6 +523,7 @@ Json Application::execute(const Json& request) {
         response["ok"] = true;
         if (command == "document.edit" || command == "document.undo" || command == "document.redo") response["effects"].push_back("document-change");
         if (command == "document.replace" && response["data"]["revision"].get<std::uint64_t>() != params["revision"].get<std::uint64_t>()) response["effects"].push_back("document-change");
+        if (command == "workspace.switch" && response["data"].value("changed", false)) response["effects"].push_back("workspace-change");
         if (command == "document.save") response["effects"].push_back("file-write");
         if (command == "settings.update") response["effects"].push_back("settings-change");
         if (response["data"].is_object() && response["data"].value("state", "") == "running") response["effects"].push_back("tool-execution");
@@ -498,6 +531,7 @@ Json Application::execute(const Json& request) {
     catch (const SettingsError& error) { response["ok"] = false; response["error"] = {{"code", error.code}, {"message", error.what()}}; }
     catch (const nlohmann::json::exception&) { response["ok"] = false; response["error"] = {{"code", "invalid-params"}, {"message", "Missing or invalid command parameters"}}; }
     catch (const std::exception& error) { response["ok"] = false; response["error"] = {{"code", "operation-failed"}, {"message", redact(error.what(), impl_->root)}}; }
+    response["workspaceGeneration"] = impl_->workspaceGeneration;
     return response;
 }
 }

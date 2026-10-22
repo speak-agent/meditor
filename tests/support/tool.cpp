@@ -27,6 +27,9 @@ int main(int argc, char** argv) {
     }
     if (argc == 1) return 0;
     if (mode == "sleep") { std::this_thread::sleep_for(std::chrono::seconds(60)); return 0; }
+    if (mode == "build") for (int i = 2; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "meditor-fixture-long-running") { std::this_thread::sleep_for(std::chrono::seconds(60)); return 0; }
+    }
     if (mode == "echo") { for (int i = 2; i < argc; ++i) std::println("{}", argv[i]); return 0; }
     if (mode == "fail") return 17;
     if (mode != "serve") {
