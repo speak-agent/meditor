@@ -15,4 +15,11 @@ Linux 上已复现旧行为：目标文件设为 `0444` 后，目录仍可写，
 
 Linux 原生窗口测试还覆盖只读保存拒绝、失败后关闭窗口被拦截、恢复权限后保存及历史重放；合成截图保留错误反馈。该路径进入 Linux CI 的 BOM/CRLF 与查找替换场景。
 
-仍未覆盖完整 A03/A07：并发写入的跨进程提交协调、写入中磁盘满与断电注入、fsync/FlushFileBuffers 及目录刷盘策略、完整 ACL/扩展属性保留、移动端 provider 与强制结束恢复继续待实现验证。现有流式 flush 不能作为硬件持久化证明。平台的权限预检查也不构成对外部进程的写入锁。
+原生临时写入进一步改用独占创建，避免重用已有临时路径；临时名与目标 basename 长度无关，避免合法长文件名因追加后缀而无法保存；创建失败时不会清理不属于本次写入的文件。POSIX 新文件以 `0600` 创建，已有文件继续保留权限位。分块写入处理短写与 POSIX EINTR，文件缓冲刷写及关闭失败均在替换前中止；使用 POSIX `fsync` / Windows `FlushFileBuffers`。非原生存储仍需独立适配，不宣称浏览器文件系统具备相同持久性。
+
+POSIX 进程内 `RLIMIT_FSIZE` 注入零字节和部分写入失败，断言原文件内容/时间戳不变且无临时残留；测试结束恢复进程限制及信号处理，不改系统配置。该注入证明写失败处理，不等于实际卷写满或断电测试。另有大于写入分块的数据、空文件和中文路径回归。
+
+仍未覆盖完整 A03/A07：并发写入的跨进程提交协调、实际磁盘满与断电注入、替换后目录刷盘策略、完整 ACL/扩展属性保留、移动端 provider 与强制结束恢复继续待实现验证。平台的权限预检查不构成对外部进程的写入锁。文件刷写也不能替代目录项持久化或硬件断电验证，见 [fsync 文档](https://man7.org/linux/man-pages/man2/fsync.2.html) 和 [FlushFileBuffers 文档](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)。
+
+
+只读保存批次 `1e2fa13` 的完整 CI [39718575071](https://github.com/speak-agent/meditor/actions/runs/39718575071) 已通过；后续原生写入/刷写改动单独跟踪 CI。后者本地通过平台/应用内核、GUI headless 和 Linux 原生交互回归。另执行 `mcpp build -p meditor-platform --target wasm32-emscripten`，Emsdk 6.0.9 编译通过；这只是平台组件编译，不是整个编辑器 Web 运行、授权或持久化验收。

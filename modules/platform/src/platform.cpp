@@ -291,6 +291,48 @@ std::string read_file(const std::filesystem::path& path, std::size_t limit) {
     while (input) { input.read(buffer.data(), buffer.size()); result.append(buffer.data(), input.gcount()); if (result.size() > limit) throw std::runtime_error("File exceeds the editing limit"); }
     if (!input.eof()) throw std::runtime_error("Could not read the file"); return result;
 }
+namespace {
+void write_temporary_file(const std::filesystem::path& path, std::string_view data, bool& created) {
+#if defined(_WIN32)
+    struct Output {
+        HANDLE handle {INVALID_HANDLE_VALUE};
+        ~Output() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+    } output {CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr)};
+    if (output.handle == INVALID_HANDLE_VALUE) throw std::runtime_error("Could not create the temporary file");
+    created = true;
+    while (!data.empty()) {
+        DWORD written {};
+        const auto count = static_cast<DWORD>(std::min<std::size_t>(data.size(), 1024 * 1024));
+        if (!WriteFile(output.handle, data.data(), count, &written, nullptr) || !written) throw std::runtime_error("Could not write the file");
+        data.remove_prefix(written);
+    }
+    if (!FlushFileBuffers(output.handle)) throw std::runtime_error("Could not flush the file");
+    if (!CloseHandle(std::exchange(output.handle, INVALID_HANDLE_VALUE))) throw std::runtime_error("Could not close the file");
+#elif !defined(__EMSCRIPTEN__)
+    struct Output {
+        int descriptor {-1};
+        ~Output() { if (descriptor >= 0) close(descriptor); }
+    } output {open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)};
+    if (output.descriptor < 0) throw std::runtime_error("Could not create the temporary file");
+    created = true;
+    while (!data.empty()) {
+        const auto written = ::write(output.descriptor, data.data(), std::min<std::size_t>(data.size(), 1024 * 1024));
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) throw std::runtime_error("Could not write the file");
+        data.remove_prefix(static_cast<std::size_t>(written));
+    }
+    while (fsync(output.descriptor)) { if (errno != EINTR) throw std::runtime_error("Could not flush the file"); }
+    if (close(std::exchange(output.descriptor, -1))) throw std::runtime_error("Could not close the file");
+#else
+    std::ofstream output(path, std::ios::binary | std::ios::out | std::ios::noreplace);
+    if (!output) throw std::runtime_error("Could not create the temporary file");
+    created = true;
+    output.write(data.data(), static_cast<std::streamsize>(data.size())); output.flush();
+    if (!output) throw std::runtime_error("Could not write the file");
+    output.close(); if (!output) throw std::runtime_error("Could not close the file");
+#endif
+}
+}
 FileReadOnlyError::FileReadOnlyError() : std::runtime_error("The file is read-only; change its permissions before saving") {}
 void write_file_atomic(const std::filesystem::path& path, std::string_view data) {
     std::error_code inspection;
@@ -316,9 +358,10 @@ void write_file_atomic(const std::filesystem::path& path, std::string_view data)
         }
 #endif
     }
-    auto temporary = path; temporary += ".meditor-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(std::random_device{}()) + ".tmp";
+    auto temporary = path.parent_path() / (".meditor-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(std::random_device{}()) + ".tmp");
+    bool created {};
     try {
-        { std::ofstream output(temporary, std::ios::binary | std::ios::trunc); output.write(data.data(), static_cast<std::streamsize>(data.size())); output.flush(); if (!output) throw std::runtime_error("Could not write the file"); }
+        write_temporary_file(temporary, data, created);
         std::error_code error;
         if (exists) {
             std::filesystem::permissions(temporary, state.permissions(), error);
@@ -329,7 +372,7 @@ void write_file_atomic(const std::filesystem::path& path, std::string_view data)
 #else
         std::filesystem::rename(temporary, path, error); if (error) throw std::runtime_error("Could not replace the file");
 #endif
-    } catch (...) { std::error_code ignored; std::filesystem::remove(temporary, ignored); throw; }
+    } catch (...) { if (created) { std::error_code ignored; std::filesystem::remove(temporary, ignored); } throw; }
 }
 std::filesystem::path executable_directory() {
 #if defined(_WIN32)
