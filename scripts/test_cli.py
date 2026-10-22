@@ -12,6 +12,7 @@ import tempfile
 import queue
 import threading
 import time
+from test_async_language import exercise as async_language_contract
 
 
 def language_failure_contract(binary, tools, root):
@@ -404,6 +405,7 @@ def main():
         assert once.returncode == 0 and json.loads(once.stdout)["ok"]
         assert str(root) not in once.stdout
         language_failure_contract(binary, tools, root)
+        async_language_contract(binary, tools, root)
         localization_contract(binary, project, settings_file)
         portable_contract(binary, tools, project, root)
     print("CLI documents, disk conflicts, task execution and LSP framing: passed")

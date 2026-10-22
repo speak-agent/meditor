@@ -12,6 +12,7 @@ using Json = nlohmann::json;
 class Application {
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    static const Json& metadata_();
 public:
     explicit Application(std::filesystem::path workspace = std::filesystem::current_path(), std::filesystem::path toolRoot = {}, std::filesystem::path settingsFile = {}, const RuntimeOptions& runtime = {});
     ~Application();

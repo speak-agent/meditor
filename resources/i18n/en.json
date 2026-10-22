@@ -40,6 +40,7 @@
   "editor.mixedLineEndings": "Mixed",
   "editor.plainText": "Plain text",
   "editor.unsupportedLineEndings": "Read-only: this file contains standalone CR characters",
+  "error.cancelled": "Operation cancelled",
   "error.capability-unavailable": "The tool does not provide this capability",
   "error.disk-conflict": "The file changed on disk. Preserve both versions before saving.",
   "error.document-too-large": "Replacement exceeds the document size limit",

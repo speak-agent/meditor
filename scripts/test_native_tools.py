@@ -71,6 +71,20 @@ sources = ["src/*.cpp", "src/*.cppm"]
                 if command == "run":
                     assert "answer=42" in result["output"]
             document = request("document.open", {"path": "src/core.cppm"})["document"]
+            for operation in ["symbols", "modules.graph", "diagnostics"]:
+                query = request("language.query", {"document": document, "revision": 1, "operation": operation, "timeoutMs": 60000})["query"]
+                deadline = time.monotonic() + 90
+                while True:
+                    response = request("language.result", {"query": query})
+                    if response["state"] != "running":
+                        break
+                    assert time.monotonic() < deadline, "Native asynchronous language query exceeded its deadline"
+                    time.sleep(.05)
+                assert response["state"] == "succeeded" and not response["stale"], (operation, response.get("error"))
+                if operation == "modules.graph":
+                    assert "sample.core" in json.dumps(response["result"])
+                elif operation == "diagnostics":
+                    assert isinstance(response["result"]["diagnostics"], list)
             symbols = request("language.symbols", {"document": document})
             assert isinstance(symbols, list)
             graph = request("modules.graph", {"document": document})
@@ -78,6 +92,29 @@ sources = ["src/*.cpp", "src/*.cppm"]
             assert "sample.core" in json.dumps(graph)
             diagnostics = request("language.diagnostics")
             assert isinstance(diagnostics, list)
+            request("language.stop")
+            original = request("document.read", {"document": document})["text"]
+            request("document.edit", {"document": document, "revision": 1, "edits": [{"start": len(original.encode()), "end": len(original.encode()), "text": "export int broken = ;\n"}]})
+            def has_errors(revision, expected):
+                deadline = time.monotonic() + 60
+                while True:
+                    query = request("language.query", {"document": document, "revision": revision, "operation": "diagnostics", "timeoutMs": 30000})["query"]
+                    while True:
+                        result = request("language.result", {"query": query})
+                        if result["state"] != "running":
+                            break
+                        assert time.monotonic() < deadline, "Native diagnostics query did not finish"
+                        time.sleep(.05)
+                    assert result["state"] == "succeeded" and not result["stale"], result.get("error")
+                    errors = [item for publication in result["result"]["diagnostics"] for item in publication.get("diagnostics", []) if item.get("severity", 1) == 1]
+                    if bool(errors) == expected:
+                        return
+                    assert time.monotonic() < deadline, "Native diagnostics did not reflect the buffer revision"
+                    time.sleep(.1)
+            has_errors(2, True)
+            assert (root / "src/core.cppm").read_bytes() == original.encode(), "Language queries unexpectedly saved the buffer"
+            request("document.undo", {"document": document, "revision": 2})
+            has_errors(3, False)
             request("language.stop")
         finally:
             process.stdin.close()

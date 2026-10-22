@@ -11,6 +11,11 @@ using Json = nlohmann::json;
 void send(Json value) {
     auto body = value.dump(); std::print("Content-Length: {}\r\n\r\n{}", body.size(), body); std::cout.flush();
 }
+void publish(const Json& document) {
+    send({{"jsonrpc", "2.0"}, {"method", "textDocument/publishDiagnostics"},
+                {"params", {{"uri", document.at("uri")}, {"version", document.at("version")},
+                    {"diagnostics", Json::array({{{"range", {{"start", {{"line", 0}, {"character", 0}}}, {"end", {{"line", 0}, {"character", 1}}}}}, {"severity", 2}, {"message", "fixture diagnostic"}}})}}}});
+}
 int main(int argc, char** argv) {
 #if defined(_WIN32)
     _setmode(_fileno(stdin), _O_BINARY);
@@ -46,16 +51,16 @@ int main(int argc, char** argv) {
         std::string body(length, '\0'); std::cin.read(body.data(), length); if (!std::cin) break;
         auto request = Json::parse(body); auto method = request.value("method", "");
         if (method == "exit") return 0;
+        if (method == "initialize" && fault == "slow-initialize") std::this_thread::sleep_for(std::chrono::seconds(3));
         if (method == "textDocument/didOpen") {
             auto document = request.at("params").at("textDocument");
             openDocuments[document["uri"].get<std::string>()] = {{"version", document["version"]}, {"text", document["text"]}};
-            send({{"jsonrpc", "2.0"}, {"method", "textDocument/publishDiagnostics"},
-                {"params", {{"uri", document.at("uri")}, {"version", document.at("version")},
-                    {"diagnostics", Json::array({{{"range", {{"start", {{"line", 0}, {"character", 0}}}, {"end", {{"line", 0}, {"character", 1}}}}}, {"severity", 2}, {"message", "fixture diagnostic"}}})}}}});
+            publish(document);
         }
         if (method == "textDocument/didChange") {
             const auto document = request["params"]["textDocument"];
             openDocuments[document["uri"].get<std::string>()] = {{"version", document["version"]}, {"text", request["params"]["contentChanges"][0]["text"]}};
+            publish(document);
         }
         if (method == "textDocument/didSave") lastSaved[request["params"]["textDocument"]["uri"].get<std::string>()] = openDocuments[request["params"]["textDocument"]["uri"].get<std::string>()];
         if (!request.contains("id")) continue;
@@ -66,6 +71,13 @@ int main(int argc, char** argv) {
         else if (method == "cxxModules/graph") result = {{"modules", Json::array({{{"name", "fixture"}}})}, {"imports", Json::array()}};
         else if (method == "cxxModules/contexts") result = {{"current", "fixture"}, {"available", Json::array()}};
         else if (method == "textDocument/documentSymbol") result = Json::array();
+        if (method == "textDocument/completion") result["fixture"] = {{"document", openDocuments[request["params"]["textDocument"]["uri"].get<std::string>()]}};
+        if (method == "textDocument/hover" && fault == "ignore-hover") continue;
+        if (method == "textDocument/hover" && (fault == "private-error" || fault == "long-private-error")) {
+            std::string message = "failure /home/synthetic-user/work token=synthetic-secret ";
+            for (int i = 0; i < (fault == "long-private-error" ? 1600 : 400); ++i) message += "🙂";
+            send({{"jsonrpc", "2.0"}, {"id", request["id"]}, {"error", {{"code", -32603}, {"message", message}}}}); continue;
+        }
         send({{"jsonrpc", "2.0"}, {"id", request["id"]}, {"result", result}});
         if (method == "textDocument/hover" && fault == "exit-after-hover") return 0;
         if (method == "textDocument/completion" && fault == "flood-and-stall") {

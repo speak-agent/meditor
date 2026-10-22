@@ -40,6 +40,7 @@
   "editor.mixedLineEndings": "混合换行",
   "editor.plainText": "纯文本",
   "editor.unsupportedLineEndings": "只读：此文件含有独立的 CR 字符",
+  "error.cancelled": "操作已取消",
   "error.capability-unavailable": "工具未提供此能力",
   "error.disk-conflict": "磁盘上的文件已改变。保存前请保留两个版本。",
   "error.document-too-large": "替换结果超出文档大小限制",
