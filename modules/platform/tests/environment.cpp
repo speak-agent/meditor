@@ -26,6 +26,12 @@ int run(int argc, char** argv) {
 #endif
         return 0;
     }
+    if (argc > 2 && std::string_view(argv[1]) == "--bundle-directory") {
+        const auto root = std::filesystem::temp_directory_path() / argv[2] / std::filesystem::u8path("包 dir");
+        require(meditor::executable_directory() == root / "bin");
+        std::println("bundle binary directory resolved");
+        return 0;
+    }
     if (argc > 1 && std::string_view(argv[1]) == "--child") {
         require(value("MEDITOR_ENV_FIXTURE") == "child-only value with spaces");
         require(!value("PATH"));
@@ -51,9 +57,27 @@ int run(int argc, char** argv) {
     }
     require(output.find("isolated child environment") != std::string::npos);
     require(value("MEDITOR_ENV_FIXTURE") == previousFixture && value("PATH") == previousPath);
+    auto utf8 = [](const std::filesystem::path& path) { const auto bytes = path.u8string(); return std::string(bytes.begin(), bytes.end()); };
+    const auto bundleName = "meditor-bundle-" + std::to_string(std::random_device{}());
+    const auto bundleRoot = std::filesystem::temp_directory_path() / bundleName / std::filesystem::u8path("包 dir");
+    std::filesystem::create_directories(bundleRoot / "bin");
+    meditor::Process bundle;
+    bundle.start({std::filesystem::absolute(argv[0]).string(), "--bundle-directory", bundleName}, std::filesystem::current_path(), true,
+        {{"MCPP_BUNDLE_DIR", utf8(bundleRoot)}});
+    bundle.close_input();
+    std::string bundleOutput;
+    const auto bundleDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    for (;;) {
+        require(std::chrono::steady_clock::now() < bundleDeadline);
+        auto read = bundle.read(std::chrono::milliseconds(20)); bundleOutput += read.data;
+        if (read.ended) { if (auto result = bundle.poll()) {
+            if (*result != 0) std::println(std::cerr, "Bundle child: {}", bundleOutput);
+            require(*result == 0); break;
+        } }
+    }
+    require(bundleOutput.find("bundle binary directory resolved") != std::string::npos);
     const auto locationName = "meditor-locations-" + std::to_string(std::random_device{}());
     const auto locationRoot = std::filesystem::temp_directory_path() / locationName / std::filesystem::u8path("世界");
-    auto utf8 = [](const std::filesystem::path& path) { const auto bytes = path.u8string(); return std::string(bytes.begin(), bytes.end()); };
     meditor::Process directories;
     directories.start({std::filesystem::absolute(argv[0]).string(), "--directories", locationName}, std::filesystem::current_path(), true,
         {{"HOME", utf8(locationRoot / "home")}, {"USERPROFILE", utf8(locationRoot / "home")},

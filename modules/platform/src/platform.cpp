@@ -431,6 +431,10 @@ std::filesystem::path executable_directory() {
 #if defined(_WIN32)
     std::wstring path(32768, L'\0'); auto count = GetModuleFileNameW(nullptr, path.data(), path.size()); if (count && count < path.size()) return std::filesystem::path(path.substr(0, count)).parent_path();
 #elif defined(__linux__)
+    if (const char* bundle = std::getenv("MCPP_BUNDLE_DIR")) {
+        std::error_code ignored; const std::filesystem::path binary = std::filesystem::path(bundle) / "bin";
+        if (std::filesystem::is_directory(binary, ignored)) return binary;
+    }
     std::error_code error; auto path = std::filesystem::read_symlink("/proc/self/exe", error); if (!error) return path.parent_path();
 #elif defined(__APPLE__)
     std::uint32_t size {}; _NSGetExecutablePath(nullptr, &size); std::string path(size, '\0'); if (!_NSGetExecutablePath(path.data(), &size)) return std::filesystem::weakly_canonical(path.c_str()).parent_path();
