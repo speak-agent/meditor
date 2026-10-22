@@ -8,7 +8,7 @@ void require(bool value, std::source_location at = std::source_location::current
     if (!value) throw std::runtime_error("Workspace transaction contract failed at line " + std::to_string(at.line()));
 }
 }
-int main() {
+void check_workspace() {
     using meditor::Json;
     auto base = std::filesystem::temp_directory_path() / ("meditor-switch-" + std::to_string(std::random_device{}()));
     struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup {base};
@@ -46,4 +46,9 @@ int main() {
     require(call("document.read", {{"document", next["data"]["document"]}})["data"]["text"] == "second");
     require(meditor::read_file(first / "main.cppm") == "edited first");
     std::println("Workspace switching preserves dirty state and session identity, resets trust and rejects obsolete context: passed");
+}
+
+int main() {
+    try { check_workspace(); return 0; }
+    catch (const std::exception& error) { std::println("{}", error.what()); return 1; }
 }
