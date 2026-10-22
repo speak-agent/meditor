@@ -14,5 +14,8 @@ int main() {
     if (syntax.tokens(1).empty() || syntax.tokens(1)[0].role != meditor::syntax::Role::Key) return 3;
     meditor::TextPresentation view("\xef\xbb\xbf" "a\r\nb\n");
     if (view.text() != "a\nb\n" || view.raw_offset(0) != 3 || meditor::encode_text_format(view.text(), view.line_endings(), true) != view.raw_text()) return 4;
+    if (meditor::find_text("你好 🙂 你好", "你好").total != 2) return 5;
+    auto changed = meditor::replace_all_display(view, "a", "X", meditor::LineEnding::CrLf);
+    if (changed.count != 1 || changed.text != "\xef\xbb\xbf" "X\r\nb\n") return 6;
     std::println("independent document and syntax consumer: passed");
 }

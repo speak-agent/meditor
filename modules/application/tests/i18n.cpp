@@ -34,6 +34,7 @@ int main() {
     for (const auto& id : english.message_ids()) {
         MessageArguments arguments;
         if (id == "settings.languageCurrent") arguments["language"] = "English";
+        if (id == "search.matches" || id == "search.replaced") arguments["count"] = "2";
         require(!english.text(id, arguments).empty() && !chinese.text(id, arguments).empty());
     }
     const auto root = std::filesystem::temp_directory_path() / ("meditor-i18n-" + std::to_string(std::random_device{}()));

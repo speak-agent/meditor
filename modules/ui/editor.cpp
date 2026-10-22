@@ -65,6 +65,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     bool dark {true};
     syntax::Language language {syntax::Language::Plain};
     syntax::Cache syntaxCache;
+    std::vector<TextRange> searchMatches;
     bool revealCaret {true};
     void rebuild_() {
         auto oldLines = std::move(lines);
@@ -93,8 +94,15 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         presentation = TextPresentation(data.at("text").get<std::string>());
         value.text = presentation.text(); format = presentation.format();
         format.lineEnding = data.at("format").at("lineEnding") == "crlf" ? LineEnding::CrLf : LineEnding::Lf;
-        documentRevision = revision;
-        auto length = units(value.text); value.selection.anchor = std::min(value.selection.anchor, length); value.selection.active = std::min(value.selection.active, length);
+        documentRevision = revision; searchMatches.clear();
+        const auto length = units(value.text);
+        auto clamp = [&](TextOffset offset) {
+            offset = std::clamp<TextOffset>(offset, 0, length);
+            try { byte_at(value.text, offset); } catch (const std::runtime_error&) { --offset; }
+            return offset;
+        };
+        value.selection = {clamp(value.selection.anchor), clamp(value.selection.active)};
+        value.composition.reset(); baseline.reset(); compositionGroup.clear();
         ++input.revision; ++input.content_revision; rebuild_();
     }
     std::vector<LineEnding> line_endings_() const { auto items = presentation.line_endings(); return {items.begin(), items.end()}; }
@@ -123,7 +131,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
             }
             auto reply = application->execute({{"command", "document.edit"}, {"params", {{"document", document}, {"revision", documentRevision}, {"historyGroup", historyGroup}, {"edits", Json::array({{{"start", prefix}, {"end", before.size() - suffix}, {"text", inserted}}})}}}});
             if (!reply.value("ok", false)) { refresh_(); return false; }
-            documentRevision = reply["data"]["revision"]; ++input.content_revision;
+            documentRevision = reply["data"]["revision"]; searchMatches.clear(); ++input.content_revision;
             presentation = std::move(prepared); format = presentation.format();
             format.lineEnding = reply["data"]["format"]["lineEnding"] == "crlf" ? LineEnding::CrLf : LineEnding::Lf;
         }
@@ -313,7 +321,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         return TextSelectionGeometry{first.caret, last.caret, first.caret};
     }
     Color SelectionHandleColor() const noexcept override { return Color::Rgb(112, 171, 255); }
-    void EndTextInput(TextInputSessionId session, TextInputEndReason) override { if (session == input.session_id) { input.session_id = 0; value.composition.reset(); baseline.reset(); ++input.revision; } }
+    void EndTextInput(TextInputSessionId session, TextInputEndReason) override { if (session == input.session_id) { input.session_id = 0; value.composition.reset(); baseline.reset(); compositionGroup.clear(); ++input.revision; } }
 };
 namespace {
 struct EditorSurface {
@@ -372,8 +380,24 @@ public:
         auto last = std::min(model.lines.size(), model.topLine + visible);
         context.DrawRect({0, 0, model.viewport.width, model.viewport.height}, model.dark ? Color::Rgb(19, 24, 34) : Color::Rgb(250, 252, 255));
         context.DrawRect({0, 0, 50, model.viewport.height}, model.dark ? Color::Rgb(16, 21, 30) : Color::Rgb(238, 242, 248));
+        for (auto i = model.topLine; i < last; ++i) {
+            const auto& line = model.lines[i]; const auto lineEnd = line.unit + units(line.text);
+            auto x = [&](TextOffset unit) {
+                const auto& positions = model.positions[i]; auto position = std::lower_bound(positions.begin(), positions.end(), unit - line.unit, [](auto item, auto offset) { return item.first < offset; });
+                return position == positions.end() ? (positions.empty() ? 0.0F : positions.back().second) : position->second;
+            };
+            for (const auto& match : model.searchMatches) {
+                if (match.end <= line.unit) continue;
+                if (match.start > lineEnd) break;
+                const auto start = std::max(match.start, line.unit), end = std::min(match.end, lineEnd);
+                if (start < end || (match.start <= lineEnd && match.end > lineEnd)) {
+                    const auto left = x(start), right = start < end ? x(end) : left + 6;
+                    context.DrawRect({64 + left, 10 + (i - model.topLine) * model.lineHeight, std::max(1.0F, right - left), model.lineHeight}, model.dark ? Color::Rgb(58, 45, 18) : Color::Rgb(249, 230, 169));
+                }
+            }
+        }
         auto geometry = model.QueryTextInputGeometry(model.input.session_id, model.value.selection.Range());
-        for (auto rectangle : geometry.range_rects) context.DrawRect(rectangle, model.dark ? Color::Rgb(42, 67, 105) : Color::Rgb(204, 224, 250));
+        for (auto rectangle : geometry.range_rects) context.DrawRect(rectangle, model.dark ? Color::Rgb(31, 49, 76) : Color::Rgb(214, 233, 255));
         TextStyle style {.font = Font::Monospace(14), .foreground = model.dark ? Color::Rgb(213, 221, 233) : Color::Rgb(35, 47, 65)};
         for (auto i = model.topLine; i < last; ++i) {
             auto y = 10 + (i - model.topLine) * model.lineHeight;
@@ -413,6 +437,25 @@ void EditorState::refresh() { impl_->refresh_(); }
 void EditorState::undo() { impl_->application->execute({{"command", "document.undo"}, {"params", {{"document", impl_->document}, {"revision", impl_->documentRevision}}}}); impl_->refresh_(); if (impl_->changed) impl_->changed(); }
 void EditorState::redo() { impl_->application->execute({{"command", "document.redo"}, {"params", {{"document", impl_->document}, {"revision", impl_->documentRevision}}}}); impl_->refresh_(); if (impl_->changed) impl_->changed(); }
 void EditorState::insert(std::string text) { auto next = impl_->value; auto endings = impl_->line_endings_(); impl_->replace_(next, next.selection.Range(), text, endings); impl_->publish_(next, {}, std::move(endings)); }
+std::uint64_t EditorState::revision() const { return impl_->documentRevision; }
+std::pair<std::size_t, std::size_t> EditorState::selection_bytes() const { auto range = impl_->value.selection.Range(); return {byte_at(impl_->value.text, range.start), byte_at(impl_->value.text, range.end)}; }
+bool EditorState::select_match(TextSelection selection, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return false;
+    try { byte_at(impl_->value.text, selection.anchor); byte_at(impl_->value.text, selection.active); } catch (...) { return false; }
+    auto next = impl_->value; next.selection = selection; return impl_->publish_(std::move(next));
+}
+bool EditorState::select_byte_range(std::size_t start, std::size_t end, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return false;
+    try { impl_->presentation.raw_offset(start); impl_->presentation.raw_offset(end); } catch (...) { return false; }
+    return select_match({units(std::string_view(impl_->value.text).substr(0, start)), units(std::string_view(impl_->value.text).substr(0, end))}, revision);
+}
+bool EditorState::set_search_results(std::vector<TextRange> matches, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return false;
+    TextOffset end {};
+    try { for (auto range : matches) { if (range.start < end || range.end <= range.start) return false; byte_at(impl_->value.text, range.start); byte_at(impl_->value.text, range.end); end = range.end; } } catch (...) { return false; }
+    impl_->searchMatches = std::move(matches); if (impl_->changed) impl_->changed(); return true;
+}
+void EditorState::clear_search_results() { impl_->searchMatches.clear(); if (impl_->changed) impl_->changed(); }
 TextFormat EditorState::text_format() const { return impl_->format; }
 std::string EditorState::language_id() const { return std::string(syntax::language_name(impl_->language)); }
 bool EditorState::highlighting_limited() const { return impl_->syntaxCache.limited(); }

@@ -31,6 +31,15 @@ public:
     std::span<const LineEnding> line_endings() const noexcept;
     std::size_t raw_offset(std::size_t displayByte) const;
 };
+struct TextMatch {
+    std::size_t start {}, end {}, utf16Start {}, utf16End {};
+    bool operator==(const TextMatch&) const = default;
+};
+struct TextSearch { std::vector<TextMatch> matches; std::size_t total {}; bool truncated {}; };
+struct TextReplacement { std::string text; std::size_t count {}; };
+TextSearch find_text(std::string_view text, std::string_view query, std::size_t start = 0, std::size_t limit = 1000, bool backward = false);
+TextReplacement replace_all_text(std::string_view text, std::string_view query, std::string_view replacement);
+TextReplacement replace_all_display(const TextPresentation& text, std::string_view query, std::string_view replacement, LineEnding preferred);
 struct Position {
     std::size_t line {};
     std::size_t character {};

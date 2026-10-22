@@ -292,6 +292,59 @@ struct Application::Impl {
                 }
                 return {{"document", id}, {"revision", record.document.revision()}, {"language", syntax::language_name(language)}, {"layer", "lexical"}, {"offsetEncoding", "utf-8-bytes-per-line"}, {"limited", cache.limited()}, {"truncated", truncated}, {"startLine", first}, {"completeLines", processed}, {"totalLines", lines.size()}, {"tokens", tokens}};
             }
+            if (command == "document.find" || command == "document.replace") {
+                const auto revision = params.at("revision").get<std::uint64_t>();
+                if (revision != record.document.revision()) throw CommandError("revision-conflict", "Document changed; read the current revision before searching");
+                const auto query = params.at("query").get<std::string>();
+                const auto space = params.value("coordinateSpace", std::string("raw"));
+                const auto direction = params.value("direction", std::string("forward"));
+                if (query.empty() || query.size() > 4096 || !valid_utf8(query) || (space != "raw" && space != "display") || (direction != "forward" && direction != "backward"))
+                    throw CommandError("invalid-params", "Invalid literal search parameters");
+                const auto raw = record.document.text(); TextPresentation display(raw);
+                const auto& text = space == "display" ? display.text() : raw;
+                const auto start = params.value("start", static_cast<std::int64_t>(direction == "backward" ? text.size() : 0));
+                const auto limit = params.value("limit", 1000LL);
+                if (start < 0 || static_cast<std::uint64_t>(start) > text.size() || limit < 1 || limit > 10000 ||
+                    (static_cast<std::size_t>(start) < text.size() && (static_cast<unsigned char>(text[start]) & 0xc0) == 0x80))
+                    throw CommandError("invalid-params", "Invalid search range or result limit");
+                if (command == "document.find") {
+                    const auto result = find_text(text, query, start, limit, direction == "backward"); Json matches = Json::array();
+                    for (const auto& match : result.matches) matches.push_back({{"start", match.start}, {"end", match.end}, {"utf16Start", match.utf16Start}, {"utf16End", match.utf16End}, {"rawStart", space == "display" ? display.raw_offset(match.start) : match.start}, {"rawEnd", space == "display" ? display.raw_offset(match.end) : match.end}});
+                    return {{"document", id}, {"revision", revision}, {"coordinateSpace", space}, {"offsetEncoding", "utf-8-bytes"}, {"total", result.total}, {"truncated", result.truncated}, {"matches", matches}};
+                }
+                const auto replacement = params.at("replacement").get<std::string>();
+                if (!valid_utf8(replacement)) throw CommandError("invalid-params", "Replacement must be valid UTF-8");
+                std::size_t count {}; std::optional<std::size_t> nextStart;
+                try {
+                    if (params.value("all", false)) {
+                        if (params.contains("start") || params.contains("direction")) throw CommandError("invalid-params", "Replace all searches the entire document");
+                        auto replaced = space == "display" ? replace_all_display(display, query, replacement, record.format.lineEnding) : replace_all_text(raw, query, replacement);
+                        count = replaced.count;
+                        if (count && replaced.text != raw) record.document.apply({{0, raw.size(), std::move(replaced.text)}}, revision);
+                    } else {
+                        const auto found = find_text(text, query, start, 1, direction == "backward");
+                        if (!found.matches.empty()) {
+                            const auto& match = found.matches.front(); auto inserted = replacement;
+                            if (space == "display") {
+                                for (std::size_t i = 0; i < inserted.size(); ++i) if (inserted[i] == '\r' && (i + 1 == inserted.size() || inserted[i + 1] != '\n')) inserted[i] = '\n';
+                                inserted = normalize_line_endings(inserted, record.format.lineEnding);
+                            }
+                            const auto a = space == "display" ? display.raw_offset(match.start) : match.start, b = space == "display" ? display.raw_offset(match.end) : match.end;
+                            if (inserted.size() > 32 * 1024 * 1024 || raw.size() - (b - a) > 32 * 1024 * 1024 - inserted.size()) throw std::length_error("Replacement exceeds the document size limit");
+                            if (space == "raw") nextStart = a + inserted.size();
+                            else {
+                                auto logical = replacement;
+                                for (std::size_t i = 0; i < logical.size(); ++i) if (logical[i] == '\r' && (i + 1 == logical.size() || logical[i + 1] != '\n')) logical[i] = '\n';
+                                logical = normalize_line_endings(logical, LineEnding::Lf);
+                                nextStart = match.start + logical.size();
+                                if (!match.start && !record.format.utf8Bom && logical.starts_with("\xef\xbb\xbf")) *nextStart -= 3;
+                            }
+                            count = 1; if (std::string_view(raw).substr(a, b - a) != inserted) record.document.apply({{a, b, std::move(inserted)}}, revision);
+                        }
+                    }
+                } catch (const std::length_error&) { throw CommandError("document-too-large", "Replacement exceeds the document size limit"); }
+                record.refresh_format(); auto result = summary(id, record); result["replacements"] = count; if (nextStart) result["nextStart"] = *nextStart; return result;
+            }
             auto revision = params.at("revision").get<std::uint64_t>();
             if (record.document.revision() != revision) throw CommandError("revision-conflict", "Document changed; read the current revision before editing");
             if (command == "document.edit") {
@@ -387,7 +440,7 @@ Application::~Application() = default;
 std::string Application::session_id() const { return impl_->session; }
 Json Application::capabilities() const {
     Json commands = Json::array();
-    for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.files", "workspace.trust", "document.open", "document.read", "document.highlight", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
+    for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.files", "workspace.trust", "document.open", "document.read", "document.highlight", "document.find", "document.replace", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
     commands.push_back("settings.get"); commands.push_back("settings.update");
     Json schemas = Json::object();
     for (const auto& name : commands) {
@@ -398,8 +451,9 @@ Json Application::capabilities() const {
         else if (command == "document.open") { field("path", "string", true); field("create", "boolean"); }
         else if (command.starts_with("document.") || command.starts_with("language.") || command.starts_with("modules.")) {
             if (command != "language.stop" && command != "language.diagnostics") field("document", "string", true);
-            if (command == "document.edit" || command == "document.undo" || command == "document.redo" || command == "document.save") field("revision", "integer", true);
+            if (command == "document.edit" || command == "document.undo" || command == "document.redo" || command == "document.save" || command == "document.find" || command == "document.replace") field("revision", "integer", true);
             if (command == "document.edit") { field("edits", "array", true); field("historyGroup", "string"); }
+            if (command == "document.find" || command == "document.replace") { field("query", "string", true); field("coordinateSpace", "string"); field("start", "integer"); field("direction", "string"); if (command == "document.find") field("limit", "integer"); else { field("replacement", "string", true); field("all", "boolean"); } }
             if (command == "document.highlight") { field("startLine", "integer"); field("maxLines", "integer"); }
             if (command == "modules.info") field("name", "string", true);
             if (command == "language.completion" || command == "language.hover" || command == "language.definition" || command == "language.references" || command == "language.signature") field("position", "object", true);
@@ -436,6 +490,7 @@ Json Application::execute(const Json& request) {
         response["data"] = command == "capabilities" ? capabilities() : impl_->dispatch(command, params);
         response["ok"] = true;
         if (command == "document.edit" || command == "document.undo" || command == "document.redo") response["effects"].push_back("document-change");
+        if (command == "document.replace" && response["data"]["revision"].get<std::uint64_t>() != params["revision"].get<std::uint64_t>()) response["effects"].push_back("document-change");
         if (command == "document.save") response["effects"].push_back("file-write");
         if (command == "settings.update") response["effects"].push_back("settings-change");
         if (response["data"].is_object() && response["data"].value("state", "") == "running") response["effects"].push_back("tool-execution");

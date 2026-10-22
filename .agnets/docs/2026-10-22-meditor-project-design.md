@@ -843,3 +843,5 @@ H01 实现进展见 [C++ 基础高亮记录](2026-10-22-cpp-highlighting.md)：�
 H01 后续已接入 Markdown、JSON/JSONC 和 TOML 基础词法与内嵌围栏，范围和限制见 [实现记录](2026-10-22-markdown-config-highlighting.md)；其他语言、完整语法、语义层和四端验收继续保留。
 
 A03/A04 进展见 [UTF-8 BOM 与换行格式保留](2026-10-22-text-format.md)：原字节 CLI/历史与 GUI 显示坐标分离，格式保留和对应回归已实现；不替代恢复、编码菜单、完整失败注入或四端输入验收。
+
+基础查找替换进展见 [共享查找与替换记录](2026-10-22-find-and-replace.md)：GUI/CLI 共用 revision 校验、原子替换和格式保留；仍需大文件异步/取消及四端产品验收。

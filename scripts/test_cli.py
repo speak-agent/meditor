@@ -189,6 +189,13 @@ def main():
             assert request("document.read", {"document": bom_id})["text"].startswith("\ufeff// export")
             request("document.undo", {"document": bom_id, "revision": 2})
             request("document.save", {"document": bom_id, "revision": 3})
+            found = request("document.find", {"document": bom_id, "revision": 3, "query": "你好", "coordinateSpace": "display"})
+            assert found["total"] == 1 and found["matches"][0]["rawStart"] == 17
+            changed = request("document.replace", {"document": bom_id, "revision": 3, "query": "你好", "replacement": "世界", "coordinateSpace": "display", "all": True})
+            assert changed["revision"] == 4 and changed["replacements"] == 1
+            assert request("document.find", {"document": bom_id, "revision": 3, "query": "你好"}, ok=False)["code"] == "revision-conflict"
+            request("document.undo", {"document": bom_id, "revision": 4})
+            request("document.save", {"document": bom_id, "revision": 5})
             assert (project / "bom.cppm").read_bytes() == bom_original.encode()
             document = request("document.open", {"path": "hello.cppm"})
             doc = document["document"]

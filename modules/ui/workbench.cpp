@@ -43,6 +43,11 @@ struct WorkspaceModel {
     bool reducedMotion {};
     bool settingsOpen {};
     bool aboutOpen {};
+    bool searchOpen {};
+    std::string searchQuery, searchReplacement, searchErrorKey;
+    std::optional<std::size_t> searchReplaced;
+    std::size_t searchTotal {};
+    bool searchWrapped {};
     Json aboutInfo;
     std::string licenseId;
     std::uint64_t settingsRevision {};
@@ -79,6 +84,8 @@ View workbench() {
     return Scope([]() -> View {
         auto model = UseState(std::make_shared<WorkspaceModel>());
         auto epoch = UseState(0);
+        auto findValue = UseState(TextEditingValue::FromText(""));
+        auto replaceValue = UseState(TextEditingValue::FromText(""));
         auto path = UseState(TextEditingValue::FromText(""));
         auto tasks = UseTaskScope();
         auto picker = UseService<FilePicker>();
@@ -141,6 +148,48 @@ View workbench() {
             }
             refresh();
         });
+        auto refreshSearch = [data, refresh] {
+            if (data->active.empty()) return;
+            auto editor = data->editors.at(data->active); editor->refresh();
+            data->searchTotal = 0; data->searchWrapped = false; data->searchErrorKey.clear();
+            if (data->searchQuery.empty()) { editor->clear_search_results(); refresh(); return; }
+            auto result = data->application->execute({{"command", "document.find"}, {"params", {{"document", data->active}, {"revision", editor->revision()}, {"query", data->searchQuery}, {"coordinateSpace", "display"}}}});
+            if (!result.value("ok", false)) { data->searchErrorKey = result["error"].value("code", "") == "invalid-params" ? "search.invalidQuery" : "error.operation-failed"; editor->clear_search_results(); refresh(); return; }
+            data->searchTotal = result["data"]["total"].get<std::size_t>(); std::vector<TextRange> ranges;
+            for (const auto& match : result["data"]["matches"]) ranges.push_back({match["utf16Start"].get<TextOffset>(), match["utf16End"].get<TextOffset>()});
+            editor->set_search_results(std::move(ranges), result["data"]["revision"].get<std::uint64_t>()); refresh();
+        };
+        auto findMatch = [data, refresh, refreshSearch](int direction, std::optional<std::size_t> cursor = {}) {
+            if (data->active.empty()) return;
+            refreshSearch(); if (data->searchQuery.empty() || !data->searchErrorKey.empty()) return; auto editor = data->editors.at(data->active); const auto selection = editor->selection_bytes();
+            Json params {{"document", data->active}, {"revision", editor->revision()}, {"query", data->searchQuery}, {"coordinateSpace", "display"}, {"limit", 1}};
+            if (direction) { params["direction"] = direction < 0 ? "backward" : "forward"; params["start"] = cursor.value_or(direction < 0 ? selection.first : selection.second); }
+            auto result = data->application->execute({{"command", "document.find"}, {"params", params}});
+            if (result.value("ok", false) && result["data"]["matches"].empty() && direction) {
+                params.erase("start"); result = data->application->execute({{"command", "document.find"}, {"params", params}});
+                data->searchWrapped = result.value("ok", false) && !result["data"]["matches"].empty();
+            }
+            if (!result.value("ok", false)) data->searchErrorKey = "error.operation-failed";
+            else if (!result["data"]["matches"].empty()) { const auto& match = result["data"]["matches"][0]; editor->select_match({match["utf16Start"].get<TextOffset>(), match["utf16End"].get<TextOffset>()}, result["data"]["revision"].get<std::uint64_t>()); }
+            refresh();
+        };
+        auto closeSearch = [data, refresh] { data->searchOpen = false; for (auto& [id, editor] : data->editors) editor->clear_search_results(); refresh(); };
+        auto openSearch = [data, refresh, refreshSearch, compact] {
+            if (data->active.empty() || data->settingsOpen || data->aboutOpen) return;
+            data->searchOpen = true; if (compact) data->navigation = false; data->searchReplaced.reset(); refreshSearch(); refresh();
+        };
+        auto replaceMatches = [data, refresh, refreshSearch, findMatch](bool all) {
+            if (data->active.empty() || data->searchQuery.empty()) return;
+            auto editor = data->editors.at(data->active); editor->refresh();
+            if (editor->text_format().loneCarriageReturns) { data->searchErrorKey = "editor.unsupportedLineEndings"; refresh(); return; }
+            data->searchReplaced.reset(); data->searchErrorKey.clear();
+            Json params {{"document", data->active}, {"revision", editor->revision()}, {"query", data->searchQuery}, {"replacement", data->searchReplacement}, {"coordinateSpace", "display"}, {"all", all}};
+            if (!all) params["start"] = editor->selection_bytes().first;
+            auto result = data->application->execute({{"command", "document.replace"}, {"params", params}});
+            if (!result.value("ok", false)) { auto key = "error." + result["error"].value("code", "operation-failed"); data->searchErrorKey = data->messages.contains(key) ? key : "error.operation-failed"; }
+            else { editor->refresh(); if (!all && result["data"].contains("nextStart")) { const auto next = result["data"]["nextStart"].get<std::size_t>(); editor->select_byte_range(next, next, editor->revision()); } data->searchReplaced = result["data"]["replacements"].get<std::size_t>(); refreshSearch(); if (!all && result["data"].contains("nextStart")) findMatch(1, result["data"]["nextStart"].get<std::size_t>()); }
+            refresh();
+        };
         auto updateSettings = [data, refresh](Json changes) {
             if (!data->preferences) { data->notice("status.settingsUnavailable"); refresh(); return; }
             auto result = data->preferences->execute({{"command", "settings.update"}, {"params", {{"revision", data->settingsRevision}, {"changes", std::move(changes)}}}});
@@ -263,6 +312,7 @@ View workbench() {
             })}.With(Padding(8), Spacing(6), Background(pane));
             auto toolbar = Flow {
                 Button(t("action.save")).Key("action-save").With(Enabled(!data->active.empty() && !data->editors.at(data->active)->text_format().loneCarriageReturns)).OnClick(save),
+                Button(t("action.find")).Key("action-find").With(Enabled(!data->active.empty())).OnClick(openSearch),
                 Button(t("action.undo")).Key("action-undo").OnClick([data] { if (!data->active.empty()) data->editors.at(data->active)->undo(); }),
                 Button(t("action.redo")).Key("action-redo").OnClick([data] { if (!data->active.empty()) data->editors.at(data->active)->redo(); }),
                 Button(t("action.build")).Key("action-build").With(Enabled(!data->busy)).OnClick([executeTask] { executeTask("build"); }),
@@ -366,14 +416,39 @@ View workbench() {
                 Button(t("settings.title")).Key("settings-entry").OnClick(showSettings)
             }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))
         }.With(Background(background), Foreground(ink), CrossAlign(CrossAxisAlignment::Stretch))
-            .On<ViewEvents::KeyIntercept>([save, data, refresh](const KeyEvent& event) {
+            .On<ViewEvents::KeyIntercept>([save, data, refresh, openSearch](const KeyEvent& event) {
                 if (event.type == KeyEventType::Down && event.key == Key::Escape && data->aboutOpen) {
                     if (!data->licenseId.empty()) data->licenseId.clear(); else data->aboutOpen = false;
                     refresh(); return true;
                 }
                 if (event.type == KeyEventType::Down && event.key == Key::Escape && data->settingsOpen) { data->settingsOpen = false; refresh(); return true; }
+                if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::F) { openSearch(); return true; }
                 if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::S) { save(); return true; } return false;
             });
+        page = std::move(page).With(Dialog{
+            .visible = data->searchOpen,
+            .content = [data, findValue, replaceValue, t, findMatch, replaceMatches, closeSearch, compact, pane, ink]() -> View {
+                const bool writable = !data->active.empty() && !data->editors.at(data->active)->text_format().loneCarriageReturns;
+                return Column {
+                    Text(t("search.title"), TextRole::Title),
+                    TextField(findValue).Key("find-query").Label(t("search.query")).OnChanged([data, findValue, findMatch](const TextEditingValue& value) { findValue = value; data->searchQuery = value.text; data->searchReplaced.reset(); findMatch(0); }).OnSubmitted([findMatch] { findMatch(1); }),
+                    TextField(replaceValue).Key("find-replacement").Label(t("search.replacement")).OnChanged([data, replaceValue](const TextEditingValue& value) { replaceValue = value; data->searchReplacement = value.text; }),
+                    Text(data->searchQuery.empty() ? t("search.empty") : data->messages.text("search.matches", {{"count", std::to_string(data->searchTotal)}})).Key("find-count"),
+                    data->searchReplaced ? View(Text(data->messages.text("search.replaced", {{"count", std::to_string(*data->searchReplaced)}})).Key("find-feedback")) : View{},
+                    data->searchErrorKey.empty() ? View{} : View(Text(t(data->searchErrorKey)).Key("find-error")),
+                    data->searchWrapped ? View(Text(t("search.wrapped")).Key("find-wrapped")) : View{},
+                    Flow {
+                        Button(t("search.previous")).Key("find-previous").With(Enabled(data->searchTotal > 0)).OnClick([findMatch] { findMatch(-1); }),
+                        Button(t("search.next")).Key("find-next").With(Enabled(data->searchTotal > 0)).OnClick([findMatch] { findMatch(1); }),
+                        Button(t("search.replace")).Key("find-replace").With(Enabled(writable && data->searchTotal > 0)).OnClick([replaceMatches] { replaceMatches(false); }),
+                        Button(t("search.replaceAll")).Key("find-replace-all").With(Enabled(writable && data->searchTotal > 0)).OnClick([replaceMatches] { replaceMatches(true); }),
+                        Button(t("search.close")).Key("find-close").OnClick(closeSearch),
+                    }.With(Spacing(8)),
+                }.Key("find-panel").With(Frame{.width = compact ? 280.0F : 520.0F}, Padding(16), Background(pane), Foreground(ink), CornerRadius(12), Spacing(12), CrossAlign(CrossAxisAlignment::Stretch));
+            },
+            .dismiss_on_cancel = true,
+            .on_dismiss_request = closeSearch,
+        });
         auto theme = data->dark ? FlatDarkThemeSpec() : FlatLightThemeSpec();
         theme.motion.reduced_motion = data->reducedMotion || UseTheme().motion.reduced_motion;
         return FlatTheme(theme, std::move(page));

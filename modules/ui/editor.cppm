@@ -19,6 +19,12 @@ public:
     void undo();
     void redo();
     void insert(std::string text);
+    std::uint64_t revision() const;
+    std::pair<std::size_t, std::size_t> selection_bytes() const;
+    bool select_byte_range(std::size_t start, std::size_t end, std::uint64_t revision);
+    bool select_match(huxerui::TextSelection selection, std::uint64_t revision);
+    bool set_search_results(std::vector<huxerui::TextRange> matches, std::uint64_t revision);
+    void clear_search_results();
     std::string document_id() const;
     bool highlighting_limited() const;
     std::string language_id() const;

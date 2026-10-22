@@ -52,6 +52,25 @@ int main() {
         require(client->QueryTextInputContext(7, 0, -1).result_code != TextInputResultCode::Ok);
         client->EndTextInput(7, TextInputEndReason::FocusLost);
         require(client->State().session_id == 0);
+        // A find dialog ends the editor session; later typing must have its own undo entry.
+        const auto beforeFocusChange = read();
+        client->BeginTextInput(8); update.text = "候选";
+        require(client->ApplyTextInput({8, {update}}).result_code == TextInputResultCode::Ok);
+        client->EndTextInput(8, TextInputEndReason::FocusLost); client->BeginTextInput(9);
+        require(client->ApplyTextInput({9, {valid}}).result_code == TextInputResultCode::Ok);
+        editor.undo(); require(read() == beforeFocusChange + "候选");
+        const auto matchRevision = editor.revision();
+        require(editor.set_search_results({{0, 2}}, matchRevision));
+        editor.insert("x");
+        require(!editor.set_search_results({{0, 2}}, matchRevision));
+        require(!editor.select_match({0, 2}, matchRevision));
+        require(!editor.set_search_results({{0, 3}}, editor.revision()));
+        require(editor.select_match({0, 2}, editor.revision()));
+        const auto oldSize = read().size();
+        require(application->execute({{"command", "document.edit"}, {"params", {{"document", document}, {"revision", editor.revision()}, {"edits", meditor::Json::array({{{"start", 0}, {"end", oldSize}, {"text", "a🙂b"}}})}}}})["ok"]);
+        editor.refresh(); require(editor.selection() == TextSelection{0, 1});
+        require(editor.select_byte_range(5, 5, editor.revision()) && editor.selection() == TextSelection{3, 3});
+        require(!editor.select_byte_range(2, 2, editor.revision()));
         application.reset();
     } catch (...) { std::filesystem::remove_all(root); throw; }
     std::filesystem::remove_all(root);

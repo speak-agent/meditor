@@ -40,6 +40,7 @@ def main():
     parser.add_argument("--language", choices=["en", "zh"], default="en")
     parser.add_argument("--syntax", choices=["cpp", "markdown", "json", "toml"], default="cpp")
     parser.add_argument("--theme", choices=["dark", "light"], default="dark")
+    parser.add_argument("--find", action="store_true")
     parser.add_argument("--bom", action="store_true")
     parser.add_argument("--crlf", action="store_true")
     args = parser.parse_args()
@@ -174,6 +175,27 @@ def main():
                 chord("a"); key("x", 1); key("x", 0); key("Return", 1); key("Return", 0); x.XSync(display, 0)
                 chord("s"); wait_for(lambda: source.read_bytes() == (replacement + "\r\n").encode())
                 chord("z"); chord("s"); wait_for(lambda: source.read_bytes() == replacement.encode())
+                chord("z"); chord("s"); wait_for(lambda: source.read_bytes() == original.encode())
+            if args.find:
+                if args.syntax != "cpp":
+                    raise RuntimeError("The native find scenario uses the C++ sample")
+                chord("f"); time.sleep(.3)
+                for character in "value":
+                    key(character, 1); key(character, 0)
+                x.XSync(display, 0); time.sleep(.3)
+                if args.screenshot:
+                    find_image = args.screenshot.with_name(args.screenshot.stem + "-find.png")
+                    subprocess.run(["import", "-window", hex(window), str(find_image)], check=True, timeout=10)
+                key("Tab", 1); key("Tab", 0); x.XSync(display, 0); time.sleep(.15)
+                for character in "answer":
+                    key(character, 1); key(character, 0)
+                for _ in range(4):
+                    key("Tab", 1); key("Tab", 0)
+                key("Return", 1); key("Return", 0); x.XSync(display, 0); time.sleep(.3)
+                if source.read_bytes() != original.encode():
+                    raise RuntimeError("Find/replace unexpectedly saved the document")
+                key("Escape", 1); key("Escape", 0); x.XSync(display, 0); time.sleep(.4)
+                chord("s"); wait_for(lambda: source.read_bytes() == original.replace("value", "answer").encode())
                 chord("z"); chord("s"); wait_for(lambda: source.read_bytes() == original.encode())
             if args.screenshot:
                 args.screenshot.parent.mkdir(parents=True, exist_ok=True)
