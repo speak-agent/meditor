@@ -87,6 +87,16 @@ sources = ["src/*.cpp", "src/*.cppm"]
                     assert isinstance(response["result"]["diagnostics"], list)
             symbols = request("language.symbols", {"document": document})
             assert isinstance(symbols, list)
+            def navigable_answer(items):
+                return any(isinstance(item, dict) and
+                    ((item.get("name", "").startswith("answer") and "location" not in item and "selectionRange" in item) or
+                     navigable_answer(item.get("children", []))) for item in items)
+            deadline = time.monotonic() + 30
+            while not navigable_answer(symbols) and time.monotonic() < deadline:
+                time.sleep(.1)
+                symbols = request("language.symbols", {"document": document})
+                assert isinstance(symbols, list)
+            assert navigable_answer(symbols), "Native language service did not return navigable hierarchical function symbols"
             graph = request("modules.graph", {"document": document})
             assert isinstance(graph, dict)
             assert "sample.core" in json.dumps(graph)

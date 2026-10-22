@@ -39,4 +39,5 @@ min_api_level = 23
 min_api_level = 23
 
 [dev-dependencies]
+meditor-test-fixture = { path = "../../tests/support" }
 huxerui.huxerui-testing = { git = "https://github.com/Sunrisepeak/HuxerUI.git", branch = "meditor" }

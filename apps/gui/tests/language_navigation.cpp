@@ -2,11 +2,14 @@
 // Copyright (C) 2026 Sunrisepeak & mcpp-community
 import std;
 import huxerui;
+import huxerui.testing;
 import meditor.application;
 import meditor.document;
 import meditor.ui.editor;
 
 namespace {
+std::shared_ptr<meditor::ui::EditorState> mountedEditor;
+huxerui::View editor_root() { return meditor::ui::code_editor(mountedEditor); }
 void require(bool value, std::source_location at = std::source_location::current()) {
     if (!value) throw std::runtime_error("Language navigation contract failed at line " + std::to_string(at.line()));
 }
@@ -45,6 +48,15 @@ int main() {
     require(editor.revision() == revision + 1);
     require(editor.select_lsp_range({1, 0}, {1, 6}, revision + 1));
     require(editor.selection() == huxerui::TextSelection{7, 13});
+    require(!editor.request_focus());
+    mountedEditor = std::make_shared<ui::EditorState>(editor);
+    {
+        huxerui::Application gui(editor_root, {.show_debug_overlay = false});
+        huxerui::testing::UiTest test(gui, {.viewport = {500, 400}}); test.Pump();
+        require(editor.request_focus()); test.Pump();
+        require(test.Find(huxerui::testing::UiSelector::Key("code-editor")).One().focused);
+    }
+    require(!editor.request_focus()); mountedEditor.reset();
     std::ifstream input(root / "main.cppm", std::ios::binary);
     require(std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) == raw);
     std::println("Revision-bound LSP navigation: BOM, CRLF, Unicode, invalid ranges and unsaved core edits passed");

@@ -24,6 +24,7 @@
 
 - 采用 `https://github.com/Sunrisepeak/HuxerUI.git` 的 `meditor` 分支，基于 `mcpp-live2d-template` 的 `0a207a56b598e102d7eab9dd52fd36933bd9e9c7` 创建；本地位于 `../HuxerUI`。
 - 通过 Git `branch = "meditor"` 引用，提交 `mcpp.lock`；使用依赖更新命令推进分支解析版本，发布沿用已验证 lockfile，无须反复修改 manifest 中的 commit。
+- GUI 分支更新使用 `python scripts/update_gui_dependency.py`：独立配置生成 mcpp 解析记录，核对上游许可证后同步 lock 与声明清单，避免 About 资源生成与缺失 lock 条目的循环依赖；随后构建、测试并提交。
 - 按责任归属修改：HuxerUI 的通用框架问题修复放其 `meditor` 分支；仅 meditor 相关的输入、渲染、平台适配或业务逻辑放本仓库对应模块，不因涉及平台就移到框架。
 
 ## 隐私

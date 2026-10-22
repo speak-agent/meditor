@@ -16,6 +16,32 @@ std::filesystem::path initialTools;
 std::filesystem::path initialSettings;
 meditor::RuntimeOptions initialRuntime;
 std::string initialDocument;
+struct LanguageRow {
+    std::string label;
+    Position start, end;
+    bool navigable {};
+    int severity {};
+};
+std::string language_label(std::string text, std::size_t limit = 2048) {
+    if (text.size() > limit) {
+        while (limit && (static_cast<unsigned char>(text[limit]) & 0xc0) == 0x80) --limit;
+        text.resize(limit); text += "…";
+    }
+    for (auto& character : text) if (static_cast<unsigned char>(character) < 32) character = ' ';
+    return text;
+}
+bool language_range(const Json& value, LanguageRow& row) {
+    try {
+        auto position = [](const Json& item) {
+            const auto line = item.at("line").get<std::int64_t>(), character = item.at("character").get<std::int64_t>();
+            if (!item.at("line").is_number_integer() || !item.at("character").is_number_integer() || line < 0 || character < 0 || line > static_cast<std::int64_t>(MAX_DOCUMENT_BYTES) || character > static_cast<std::int64_t>(MAX_DOCUMENT_BYTES))
+                throw std::runtime_error("Invalid language position");
+            return Position{static_cast<std::size_t>(line), static_cast<std::size_t>(character)};
+        };
+        row.start = position(value.at("start")); row.end = position(value.at("end"));
+        return std::tie(row.start.line, row.start.character) <= std::tie(row.end.line, row.end.character);
+    } catch (const std::exception&) { return false; }
+}
 struct WorkspaceModel {
     std::shared_ptr<meditor::Application> application;
     std::shared_ptr<meditor::Application> preferences;
@@ -52,6 +78,47 @@ struct WorkspaceModel {
     std::optional<std::size_t> searchReplaced;
     std::size_t searchTotal {};
     bool searchWrapped {};
+    std::string languageOperation, languageQuery, languageDocument, languageState {"language.empty"};
+    std::uint64_t languageRevision {}, languageSequence {};
+    bool languageVerified {}, languageTruncated {};
+    std::vector<LanguageRow> languageRows;
+    void cancel_language() {
+        if (application && !languageQuery.empty()) application->execute({{"command", "language.cancel"}, {"params", {{"query", languageQuery}}}});
+        languageQuery.clear(); ++languageSequence;
+    }
+    void close_language() { cancel_language(); languageOperation.clear(); languageRows.clear(); }
+    bool language_current() const {
+        return active == languageDocument && editors.contains(active) && editors.at(active)->revision() == languageRevision;
+    }
+    void adopt_language_result(const Json& result) {
+        languageRows.clear(); languageTruncated = false; languageVerified = languageOperation != "diagnostics";
+        auto add = [&](const Json& value, std::string label, bool navigate, int severity = 0) {
+            LanguageRow row; row.label = language_label(std::move(label));
+            row.severity = severity;
+            row.navigable = language_range(value, row) && navigate;
+            languageRows.push_back(std::move(row));
+        };
+        if (languageOperation == "diagnostics") {
+            languageVerified = result.at("versionVerified").get<bool>();
+            for (const auto& publication : result.at("diagnostics")) for (const auto& item : publication.at("diagnostics")) {
+                if (languageRows.size() == 200) { languageTruncated = true; break; }
+                add(item.value("range", Json::object()), item.at("message").get<std::string>(), languageVerified, item.value("severity", 0));
+            }
+        } else {
+            if (result.is_null()) { languageState = "language.empty"; return; }
+            if (!result.is_array()) throw std::runtime_error("Invalid symbol result");
+            std::function<void(const Json&, std::size_t)> collect = [&](const Json& items, std::size_t depth) {
+                for (const auto& item : items) {
+                    if (languageRows.size() == 200 || depth > 32) { languageTruncated = true; return; }
+                    // SymbolInformation has a URI and must wait for workspace-owned URI resolution.
+                    add(item.value("selectionRange", item.value("range", Json::object())), std::string(depth * 2, ' ') + item.at("name").get<std::string>(), !item.contains("location"));
+                    if (item.contains("children")) { if (!item["children"].is_array()) throw std::runtime_error("Invalid symbol children"); collect(item["children"], depth + 1); }
+                }
+            };
+            collect(result, 0);
+        }
+        languageState = languageRows.empty() ? "language.empty" : "language.ready";
+    }
     Json aboutInfo;
     std::string licenseId;
     std::uint64_t settingsRevision {};
@@ -82,7 +149,7 @@ struct WorkspaceModel {
         files.swap(nextFiles);
         name = application ? response["data"]["name"].get<std::string>() : meditor::path_to_utf8(root.filename());
         generation = response["workspaceGeneration"].get<std::uint64_t>();
-        application = std::move(next); editors.clear(); tabs.clear(); active.clear(); selected = true;
+        close_language(); application = std::move(next); editors.clear(); tabs.clear(); active.clear(); selected = true;
         busy = false; activeTask.clear(); output.clear(); searchOpen = false;
         searchTotal = 0; searchReplaced.reset(); searchErrorKey.clear();
         notice("status.workspaceOpened"); return true;
@@ -139,6 +206,7 @@ View workbench(WorkspaceServices services) {
             auto result = run("document.open", {{"path", name}});
             if (!result.is_object() || !result.value("ok", false)) return;
             auto id = result["data"]["document"].get<std::string>();
+            if (data->active != id && !data->languageOperation.empty()) { data->cancel_language(); data->languageRows.clear(); data->languageState = "language.stale"; }
             if (!data->editors.contains(id)) { data->editors[id] = std::make_shared<EditorState>(data->application, id, refresh); data->tabs.push_back(id); }
             data->active = id; data->detail(name); refresh();
         };
@@ -275,6 +343,44 @@ View workbench(WorkspaceServices services) {
                 data->busy = false; data->activeTask.clear(); refresh();
             });
         };
+        auto queryLanguage = [data, tasks, refresh, compact](std::string operation) {
+            if (data->active.empty() || data->settingsOpen || data->aboutOpen || data->searchOpen || data->editors.at(data->active)->language_id() != "cpp") return;
+            auto editor = data->editors.at(data->active); editor->refresh();
+            data->cancel_language(); data->languageOperation = std::move(operation);
+            data->languageDocument = data->active; data->languageRevision = editor->revision();
+            data->languageRows.clear(); data->languageVerified = false; data->languageTruncated = false;
+            if (compact) data->navigation = false;
+            auto reply = data->application->execute({{"command", "language.query"}, {"params", {{"document", data->active}, {"revision", editor->revision()}, {"operation", data->languageOperation}}}});
+            if (!reply.value("ok", false)) {
+                const auto key = "error." + reply["error"].value("code", "operation-failed");
+                data->languageState = data->messages.contains(key) ? key : "error.operation-failed"; refresh(); return;
+            }
+            data->languageQuery = reply["data"]["query"].get<std::string>(); data->languageState = "language.running";
+            const auto application = data->application; const auto generation = data->generation;
+            const auto sequence = data->languageSequence; const auto id = data->languageQuery; refresh();
+            tasks.Launch([=]() -> Task<void> {
+                while (true) {
+                    co_await Delay(std::chrono::milliseconds(100));
+                    if (data->application != application || data->generation != generation || data->languageSequence != sequence) co_return;
+                    if (!data->language_current()) { data->cancel_language(); data->languageState = "language.stale"; refresh(); co_return; }
+                    const auto reply = application->execute({{"command", "language.result"}, {"params", {{"query", id}}}});
+                    if (!reply.value("ok", false)) { data->languageQuery.clear(); data->languageState = "error.operation-failed"; refresh(); co_return; }
+                    const auto& result = reply["data"]; const auto state = result.value("state", "failed");
+                    if (state == "running") continue;
+                    data->languageQuery.clear();
+                    if (result.value("stale", true)) data->languageState = "language.stale";
+                    else if (state == "cancelled") data->languageState = "language.cancelled";
+                    else if (state != "succeeded") {
+                        const auto key = "error." + result["error"].value("code", "operation-failed");
+                        data->languageState = data->messages.contains(key) ? key : "error.operation-failed";
+                    } else {
+                        try { data->adopt_language_result(result.at("result")); }
+                        catch (const std::exception&) { data->languageRows.clear(); data->languageState = "language.invalidResult"; }
+                    }
+                    refresh(); co_return;
+                }
+            });
+        };
         auto choose = [data, tasks, picker, refresh, services] {
             if (data->choosing) return;
             if (data->application) {
@@ -345,11 +451,16 @@ View workbench(WorkspaceServices services) {
                 auto record = data->application->execute({{"command", "document.read"}, {"params", {{"document", id}}}})["data"];
                 auto name = meditor::path_to_utf8(std::filesystem::u8path(record.value("path", t("workspace.untitled"))).filename());
                 if (record.value("dirty", false)) name += " •";
-                return Button(name).Key(id).With(Background(data->active == id ? Color::Rgb(54, 69, 98) : pane)).OnClick([data, id, refresh] { data->active = id; refresh(); });
+                return Button(name).Key(id).With(Background(data->active == id ? Color::Rgb(54, 69, 98) : pane)).OnClick([data, id, refresh] {
+                    if (data->active != id && !data->languageOperation.empty()) { data->cancel_language(); data->languageRows.clear(); data->languageState = "language.stale"; }
+                    data->active = id; refresh();
+                });
             })}.With(Padding(8), Spacing(6), Background(pane));
             auto toolbar = Flow {
                 Button(t("action.save")).Key("action-save").With(Enabled(!data->active.empty() && !data->editors.at(data->active)->text_format().loneCarriageReturns)).OnClick(save),
                 Button(t("action.find")).Key("action-find").With(Enabled(!data->active.empty())).OnClick(openSearch),
+                Button(t("language.problems")).Key("action-problems").With(Enabled(!data->active.empty() && data->editors.at(data->active)->language_id() == "cpp")).OnClick([queryLanguage] { queryLanguage("diagnostics"); }),
+                Button(t("language.outline")).Key("action-outline").With(Enabled(!data->active.empty() && data->editors.at(data->active)->language_id() == "cpp")).OnClick([queryLanguage] { queryLanguage("symbols"); }),
                 Button(t("action.undo")).Key("action-undo").OnClick([data] { if (!data->active.empty()) data->editors.at(data->active)->undo(); }),
                 Button(t("action.redo")).Key("action-redo").OnClick([data] { if (!data->active.empty()) data->editors.at(data->active)->redo(); }),
                 Button(t("action.build")).Key("action-build").With(Enabled(!data->busy)).OnClick([executeTask] { executeTask("build"); }),
@@ -358,10 +469,42 @@ View workbench(WorkspaceServices services) {
                 Button(t("action.cancelTask")).Key("action-cancel-task").With(Enabled(data->busy)).OnClick([data, run] { if (!data->activeTask.empty()) run("task.cancel", {{"task", data->activeTask}}); }),
                 Button(t("action.trust")).Key("action-trust").OnClick([run] { run("workspace.trust", {{"allow", true}}); }),
             }.With(Padding(8), Spacing(6));
+            View languagePanel;
+            if (!data->languageOperation.empty()) {
+                const auto current = data->language_current();
+                const auto state = current ? data->languageState : std::string("language.stale");
+                std::vector<std::size_t> rows(data->languageRows.size()); std::iota(rows.begin(), rows.end(), 0);
+                languagePanel = Column {
+                    Flow {
+                        Text(t(data->languageOperation == "diagnostics" ? "language.problems" : "language.outline"), TextRole::Title),
+                        Button(t("language.refresh")).Key("language-refresh").With(Enabled(data->languageQuery.empty() && !data->active.empty() && data->editors.at(data->active)->language_id() == "cpp")).OnClick([data, queryLanguage] { queryLanguage(data->languageOperation); }),
+                        Button(t("language.cancel")).Key("language-cancel").With(Enabled(!data->languageQuery.empty())).OnClick([data, refresh] { data->cancel_language(); data->languageRows.clear(); data->languageState = "language.cancelled"; refresh(); }),
+                        Button(t("language.close")).Key("language-close").OnClick([data, refresh] { data->close_language(); if (!data->active.empty()) data->editors.at(data->active)->request_focus(); refresh(); }),
+                    }.With(Spacing(8)),
+                    Text(t(state), TextRole::Label).Key("language-state"),
+                    current && data->languageOperation == "diagnostics" && (state == "language.ready" || state == "language.empty") && !data->languageVerified ? View(Text(t("language.unverified"), TextRole::Label).Key("language-unverified")) : View{},
+                    data->languageTruncated ? View(Text(t("language.truncated"), TextRole::Label).Key("language-truncated")) : View{},
+                    ScrollView {Column {ForEach(rows, [data, current, t, refresh](std::size_t index) {
+                        const auto row = data->languageRows.at(index);
+                        const auto position = data->messages.text("language.position", {{"line", std::to_string(row.start.line + 1)}, {"column", std::to_string(row.start.character + 1)}});
+                        const std::array severityNames {t("language.severity.1"), t("language.severity.2"), t("language.severity.3"), t("language.severity.4")};
+                        const auto severity = row.severity >= 1 && row.severity <= 4 ? severityNames[row.severity - 1] + ": " : "";
+                        return Button(severity + row.label + (row.navigable ? " · " + position : "")).Key("language-row-" + std::to_string(index))
+                            .With(Enabled(current && row.navigable)).OnClick([data, row, refresh] {
+                                if (!data->language_current()) { data->languageState = "language.stale"; refresh(); return; }
+                                auto editor = data->editors.at(data->active);
+                                if (!editor->select_lsp_range(row.start, row.end, data->languageRevision)) data->languageState = "language.invalidPosition";
+                                else if (!editor->request_focus()) data->languageState = "language.focusUnavailable";
+                                refresh();
+                            });
+                    })}.With(Spacing(4), CrossAlign(CrossAxisAlignment::Stretch))}.With(Grow{1}),
+                }.Key("language-panel").With(Frame{.height = compact ? 240.0F : 260.0F}, Padding(12), Spacing(8), Background(pane), CrossAlign(CrossAxisAlignment::Stretch));
+            }
             auto center = Column {toolbar, tabs,
                 !data->active.empty() && data->editors.at(data->active)->text_format().loneCarriageReturns ? View(Text(t("editor.unsupportedLineEndings"), TextRole::Label).Key("format-read-only").With(Padding(8))) : View{},
                 !data->active.empty() && data->editors.at(data->active)->highlighting_limited() ? View(Text(t("editor.highlightLimited"), TextRole::Label).Key("highlight-limited").With(Padding(8))) : View{},
                 std::move(editor),
+                std::move(languagePanel),
                 data->output.empty() ? View{} : View(ScrollView {SelectionArea {Text(data->output).Style({.font = Font::Monospace(12)})}}.With(Frame{.height = 160}, Padding(12), Background(pane)))
             }.Key("workspace-editor-pane").With(Grow{1}, CrossAlign(CrossAxisAlignment::Stretch));
             body = Row {data->navigation ? View(sidebar) : View{}, (!compact || !data->navigation) ? View(center) : View{}}.With(Grow{1}, CrossAlign(CrossAxisAlignment::Stretch));
@@ -454,12 +597,16 @@ View workbench(WorkspaceServices services) {
                 Button(t("settings.title")).Key("settings-entry").OnClick(showSettings)
             }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))
         }.With(Background(background), Foreground(ink), CrossAlign(CrossAxisAlignment::Stretch))
-            .On<ViewEvents::KeyIntercept>([save, data, refresh, openSearch](const KeyEvent& event) {
+            .On<ViewEvents::KeyIntercept>([save, data, refresh, openSearch, queryLanguage](const KeyEvent& event) {
                 if (event.type == KeyEventType::Down && event.key == Key::Escape && data->aboutOpen) {
                     if (!data->licenseId.empty()) data->licenseId.clear(); else data->aboutOpen = false;
                     refresh(); return true;
                 }
                 if (event.type == KeyEventType::Down && event.key == Key::Escape && data->settingsOpen) { data->settingsOpen = false; refresh(); return true; }
+                if (event.type == KeyEventType::Down && event.key == Key::Escape && !data->searchOpen && !data->languageOperation.empty()) {
+                    data->close_language(); if (!data->active.empty()) data->editors.at(data->active)->request_focus(); refresh(); return true;
+                }
+                if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.modifiers.shift && (event.key == Key::O || event.key == Key::M)) { queryLanguage(event.key == Key::O ? "symbols" : "diagnostics"); return true; }
                 if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::F) { openSearch(); return true; }
                 if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::S) { save(); return true; } return false;
             });

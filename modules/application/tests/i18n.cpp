@@ -35,8 +35,11 @@ int main() {
         MessageArguments arguments;
         if (id == "settings.languageCurrent") arguments["language"] = "English";
         if (id == "search.matches" || id == "search.replaced") arguments["count"] = "2";
+        if (id == "language.position") { arguments["line"] = "2"; arguments["column"] = "12"; }
         require(!english.text(id, arguments).empty() && !chinese.text(id, arguments).empty());
     }
+    require(english.text("language.position", {{"line", "2"}, {"column", "12"}}) == "Line 2, column 12");
+    require(chinese.text("language.position", {{"line", "2"}, {"column", "12"}}) == "第 2 行，第 12 列");
     const auto root = std::filesystem::temp_directory_path() / ("meditor-i18n-" + std::to_string(std::random_device{}()));
     std::filesystem::create_directories(root);
     struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup {root};

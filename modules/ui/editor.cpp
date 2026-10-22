@@ -67,6 +67,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     syntax::Cache syntaxCache;
     std::vector<TextRange> searchMatches;
     bool revealCaret {true};
+    ViewNode* focusNode {};
     void rebuild_() {
         auto oldLines = std::move(lines);
         auto oldPositions = std::move(positions);
@@ -331,11 +332,16 @@ struct EditorSurface {
 };
 class EditorSurface::Extension : public NodeExtension {
     std::shared_ptr<EditorState::Impl> model_;
+    ViewNode* node_ {};
     bool focused_ {};
     bool dragging_ {};
 public:
-    Extension(ViewNode&, const EditorSurface& spec) : model_(spec.model) {}
-    void Update(ViewNode&, const EditorSurface& spec) { model_ = spec.model; InvalidatePaint(); }
+    Extension(ViewNode& node, const EditorSurface& spec) : model_(spec.model), node_(&node) { model_->focusNode = node_; }
+    ~Extension() override { if (model_->focusNode == node_) model_->focusNode = nullptr; }
+    void Update(ViewNode& node, const EditorSurface& spec) {
+        if (model_->focusNode == node_) model_->focusNode = nullptr;
+        model_ = spec.model; node_ = &node; model_->focusNode = node_; InvalidatePaint();
+    }
     std::shared_ptr<TextInputClient> GetTextInputClient() noexcept override { return model_; }
     TextSelectionClient* GetTextSelectionClient() noexcept override { return model_.get(); }
     bool HitTest(ViewNode& node, Point point) const override { return point.x >= 0 && point.y >= 0 && point.x <= node.Bounds().width && point.y <= node.Bounds().height; }
@@ -459,6 +465,7 @@ bool EditorState::select_lsp_range(Position start, Position end, std::uint64_t r
         return first <= last && select_byte_range(first, last, revision);
     } catch (...) { return false; }
 }
+bool EditorState::request_focus() { return impl_->focusNode && impl_->focusNode->RequestFocus(); }
 bool EditorState::set_search_results(std::vector<TextRange> matches, std::uint64_t revision) {
     if (revision != impl_->documentRevision) return false;
     TextOffset end {};

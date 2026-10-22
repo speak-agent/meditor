@@ -42,10 +42,13 @@ toolchain = "emsdk@6.0.9"
 [features]
 test-support = []
 
+[feature-deps.test-support]
+meditor-test-fixture = { path = "tests/support" }
+
 [targets.meditor-test-tool]
 kind = "bin"
 required_features = ["test-support"]
-main = "tests/support/tool.cpp"
+main = "tests/support/main.cpp"
 
 [build-dependencies]
 meditor-distribution = { path = "mcpp/distribution" }

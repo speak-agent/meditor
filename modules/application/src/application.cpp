@@ -147,7 +147,7 @@ public:
                 {"workspaceFolders", Json::array({{{"uri", make_uri(root)}, {"name", "workspace"}}})},
                 {"initializationOptions", {{"mcpp", path_to_utf8(driver)}, {"toolEnvironment", "editor"}}},
                 {"capabilities", {{"general", {{"positionEncodings", Json::array({"utf-16"})}}}, {"workspace", {{"configuration", true}}},
-                    {"textDocument", {{"synchronization", {{"didSave", true}}}, {"completion", {{"completionItem", {{"snippetSupport", false}}}}}}},
+                    {"textDocument", {{"synchronization", {{"didSave", true}}}, {"documentSymbol", {{"hierarchicalDocumentSymbolSupport", true}}}, {"completion", {{"completionItem", {{"snippetSupport", false}}}}}}},
                     {"experimental", {{"cxxModules", {{"version", 1}, {"status", true}, {"graph", true}, {"contexts", true}}}}}}}}, 30000, stop);
             serverCapabilities_ = init.value("capabilities", Json::object());
             notify("initialized", Json::object());

@@ -7,8 +7,8 @@ version = 2
 
 [package."huxerui.huxerui"]
 version = "meditor"
-source  = "git+https://github.com/Sunrisepeak/HuxerUI.git#branch=meditor@5b2de57c2398c8ed075018818841440dda92ea69"
-hash    = "fnv1a:27b3937469e38efd"
+source  = "git+https://github.com/Sunrisepeak/HuxerUI.git#branch=meditor@0e479bf26f90a6560acb8f1b4fb542a4dda72ca8"
+hash    = "fnv1a:ce7dc2b79c9b300f"
 
 [package."mcpp.plugins"]
 namespace = "mcpp"

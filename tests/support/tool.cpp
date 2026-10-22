@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sunrisepeak & mcpp-community
+module;
 #if defined(_WIN32)
 #include <io.h>
 #include <fcntl.h>
 #include <cstdio>
 #endif
+module meditor.test.fixture;
 import std;
 import nlohmann.json;
+namespace meditor::testing {
 using Json = nlohmann::json;
 void send(Json value) {
     auto body = value.dump(); std::print("Content-Length: {}\r\n\r\n{}", body.size(), body); std::cout.flush();
 }
-void publish(const Json& document) {
-    send({{"jsonrpc", "2.0"}, {"method", "textDocument/publishDiagnostics"},
-                {"params", {{"uri", document.at("uri")}, {"version", document.at("version")},
-                    {"diagnostics", Json::array({{{"range", {{"start", {{"line", 0}, {"character", 0}}}, {"end", {{"line", 0}, {"character", 1}}}}}, {"severity", 2}, {"message", "fixture diagnostic"}}})}}}});
+void publish(const Json& document, bool verified = true) {
+    Json params {{"uri", document.at("uri")}, {"diagnostics", Json::array({{{"range", {{"start", {{"line", 0}, {"character", 0}}}, {"end", {{"line", 0}, {"character", 1}}}}}, {"severity", 2}, {"message", "fixture diagnostic"}}})}};
+    if (verified) params["version"] = document.at("version");
+    send({{"jsonrpc", "2.0"}, {"method", "textDocument/publishDiagnostics"}, {"params", std::move(params)}});
 }
-int main(int argc, char** argv) {
+int run_tool(int argc, char** argv) {
 #if defined(_WIN32)
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
@@ -42,25 +45,28 @@ int main(int argc, char** argv) {
         std::println("{}", Json({{"arguments", args}}).dump()); return 0;
     }
     const auto* faultMode = std::getenv("MEDITOR_FIXTURE_LSP_MODE");
-    const std::string fault = faultMode ? faultMode : "";
+    std::string fault = faultMode ? faultMode : "";
+    if (!faultMode) { std::ifstream file(".meditor-fixture-lsp-mode"); std::getline(file, fault); }
     std::map<std::string, Json> openDocuments, lastSaved;
+    bool hierarchicalSymbols {};
     while (true) {
         std::string line; std::size_t length {};
         while (std::getline(std::cin, line)) { if (line == "\r" || line.empty()) break; if (line.starts_with("Content-Length:")) length = std::stoull(line.substr(15)); }
         if (!std::cin || length > 16 * 1024 * 1024) break;
         std::string body(length, '\0'); std::cin.read(body.data(), length); if (!std::cin) break;
         auto request = Json::parse(body); auto method = request.value("method", "");
+        if (method == "initialize") hierarchicalSymbols = request["params"]["capabilities"]["textDocument"].value("documentSymbol", Json::object()).value("hierarchicalDocumentSymbolSupport", false);
         if (method == "exit") return 0;
         if (method == "initialize" && fault == "slow-initialize") std::this_thread::sleep_for(std::chrono::seconds(3));
         if (method == "textDocument/didOpen") {
             auto document = request.at("params").at("textDocument");
             openDocuments[document["uri"].get<std::string>()] = {{"version", document["version"]}, {"text", document["text"]}};
-            publish(document);
+            publish(document, fault != "gui-unversioned");
         }
         if (method == "textDocument/didChange") {
             const auto document = request["params"]["textDocument"];
             openDocuments[document["uri"].get<std::string>()] = {{"version", document["version"]}, {"text", request["params"]["contentChanges"][0]["text"]}};
-            publish(document);
+            publish(document, fault != "gui-unversioned");
         }
         if (method == "textDocument/didSave") lastSaved[request["params"]["textDocument"]["uri"].get<std::string>()] = openDocuments[request["params"]["textDocument"]["uri"].get<std::string>()];
         if (!request.contains("id")) continue;
@@ -70,7 +76,23 @@ int main(int argc, char** argv) {
         else if (method == "textDocument/hover") result = {{"contents", {{"kind", "plaintext"}, {"value", "fixture semantic value"}}}, {"fixture", {{"lastSaved", lastSaved.contains(request["params"]["textDocument"]["uri"].get<std::string>()) ? lastSaved.at(request["params"]["textDocument"]["uri"].get<std::string>()) : Json(nullptr)}}}};
         else if (method == "cxxModules/graph") result = {{"modules", Json::array({{{"name", "fixture"}}})}, {"imports", Json::array()}};
         else if (method == "cxxModules/contexts") result = {{"current", "fixture"}, {"available", Json::array()}};
-        else if (method == "textDocument/documentSymbol") result = Json::array();
+        else if (method == "textDocument/documentSymbol") {
+            result = Json::array();
+            if (fault.starts_with("gui-")) {
+                const Json range {{"start", {{"line", 1}, {"character", 11}}}, {"end", {{"line", 1}, {"character", 16}}}};
+                result.push_back({{"name", "value🙂"}, {"kind", 12}, {"range", range}, {"selectionRange", range}});
+                if (!hierarchicalSymbols) {
+                    result[0]["location"] = {{"uri", request["params"]["textDocument"]["uri"]}, {"range", range}};
+                    result[0].erase("range"); result[0].erase("selectionRange");
+                }
+                if (fault == "gui-many-symbols") for (int i = 1; i < 210; ++i) result.push_back(result[0]);
+                if (fault == "gui-invalid-symbols") result = Json::object();
+                if (fault == "gui-slow-symbols" || fault == "gui-slow-edit") {
+                    { std::ofstream marker(".meditor-fixture-symbol-requested"); marker << "requested"; }
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+            }
+        }
         if (method == "textDocument/completion") result["fixture"] = {{"document", openDocuments[request["params"]["textDocument"]["uri"].get<std::string>()]}};
         if (method == "textDocument/hover" && fault == "ignore-hover") continue;
         if (method == "textDocument/hover" && (fault == "private-error" || fault == "long-private-error")) {
@@ -87,4 +109,5 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::seconds(10)); return 0;
         }
     }
+}
 }
