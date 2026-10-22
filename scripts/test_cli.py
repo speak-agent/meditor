@@ -11,6 +11,48 @@ import sys
 import tempfile
 
 
+def portable_contract(binary, tools, project, root):
+    package = root / "portable package"
+    directory = package / "bin"; directory.mkdir(parents=True)
+    executable = directory / binary.name
+    shutil.copy2(binary, executable)
+    for library in binary.parent.glob("*.dll"):
+        shutil.copy2(library, directory / library.name)
+    shutil.copytree(tools, directory / "tools")
+    (package / "portable.json").write_text(json.dumps({"schemaVersion": 1, "dataDirectory": "state"}), encoding="utf-8")
+
+    def command(name, params=None, trust=False):
+        environment = {**os.environ, "MEDITOR_FIXTURE_ENV_LOG": str(package / "state/receipts")}
+        arguments = [str(executable), name, "--workspace", str(project), "--format", "json", "--params", json.dumps(params or {})]
+        if trust:
+            arguments.append("--trust")
+        result = subprocess.run(arguments, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=20)
+        assert result.returncode == 0, "Portable configuration command failed"
+        reply = json.loads(result.stdout); assert reply["ok"]
+        return reply["data"]
+
+    assert command("doctor")["runtime"] == {"mode": "portable", "managedToolHomes": True}
+    assert not (package / "state").exists()
+    command("settings.update", {"revision": 0, "changes": {"theme": "light"}})
+    assert json.loads((package / "state/settings.json").read_text(encoding="utf-8"))["values"]["theme"] == "light"
+    command("build", trust=True)
+    receipt = json.loads((package / "state/receipts/task.json").read_text(encoding="utf-8"))
+    assert Path(receipt["MCPP_HOME"]).resolve() == (package / "state/mcpp").resolve()
+    assert Path(receipt["MCPPLS_CACHE_DIR"]).resolve() == (package / "state/cache/mcppls").resolve()
+
+    previous = package
+    package.rename(root / "relocated package"); package = root / "relocated package"
+    executable = package / "bin" / binary.name
+    assert command("settings.get")["values"]["theme"] == "light"
+    command("build", trust=True)
+    receipt = json.loads((package / "state/receipts/task.json").read_text(encoding="utf-8"))
+    assert Path(receipt["MCPP_HOME"]).resolve() == (package / "state/mcpp").resolve()
+    assert not previous.exists()
+    (package / "portable.json").write_text(json.dumps({"schemaVersion": 1, "dataDirectory": "../escape"}), encoding="utf-8")
+    failed = subprocess.run([str(executable), "doctor", "--workspace", str(project)], capture_output=True, timeout=15)
+    assert failed.returncode != 0 and not (root / "escape").exists()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True, type=Path)
@@ -30,7 +72,10 @@ def main():
             target.parent.mkdir(parents=True)
             shutil.copy2(fixture, target)
         settings_file = root / "configuration/settings.json"
-        process = subprocess.Popen([str(binary), "serve", "--stdio", "--workspace", str(project), "--tool-root", str(tools), "--settings-file", str(settings_file)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        data_root = root / "runtime data"
+        receipts = root / "environment-receipts"
+        child_environment = {**os.environ, "MEDITOR_FIXTURE_ENV_LOG": str(receipts)}
+        process = subprocess.Popen([str(binary), "serve", "--stdio", "--workspace", str(project), "--tool-root", str(tools), "--settings-file", str(settings_file), "--data-root", str(data_root)], env=child_environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
         sequence = 0
         def request(command, params=None, *, ok=True):
             nonlocal sequence
@@ -98,8 +143,13 @@ def main():
             result = request("task.wait", {"task": task["task"]})
             assert result["state"] == "succeeded" and result["exitCode"] == 0
             assert "fixture-target" in result["output"]
+            task_environment = json.loads((receipts / "task.json").read_text(encoding="utf-8"))
+            assert Path(task_environment["MCPP_HOME"]).resolve() == (data_root / "mcpp").resolve()
+            assert Path(task_environment["MCPPLS_CACHE_DIR"]).resolve() == (data_root / "cache/mcppls").resolve()
+            assert Path(task_environment["TMPDIR"]).resolve() == (data_root / "temp").resolve()
             completion = request("language.completion", {"document": doc, "position": {"line": 1, "character": 7}})
             assert completion["items"][0]["label"] == "module_value"
+            assert json.loads((receipts / "language.json").read_text(encoding="utf-8")) == task_environment
             diagnostics = request("language.diagnostics")
             assert diagnostics[0]["diagnostics"][0]["message"] == "fixture diagnostic"
             assert request("modules.graph", {"document": doc})["modules"][0]["name"] == "fixture"
@@ -127,6 +177,7 @@ def main():
         once = subprocess.run([str(binary), "doctor", "--workspace", str(project), "--tool-root", str(tools), "--format", "json"], capture_output=True, text=True, timeout=20)
         assert once.returncode == 0 and json.loads(once.stdout)["ok"]
         assert str(root) not in once.stdout
+        portable_contract(binary, tools, project, root)
     print("CLI documents, disk conflicts, task execution and LSP framing: passed")
 
 

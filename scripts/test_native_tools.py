@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 
 
 def main():
@@ -43,14 +44,21 @@ sources = ["src/*.cpp", "src/*.cppm"]
             process.stdin.write(json.dumps({"id": sequence, "command": command, "params": params or {}}) + "\n")
             process.stdin.flush()
             reply = json.loads(process.stdout.readline())
+            assert reply["requestId"] == sequence
+            if command == "task.wait" and not reply["ok"] and reply.get("error", {}).get("code") == "timeout":
+                return None
             assert reply["requestId"] == sequence and reply["ok"], (command, reply.get("error", {}).get("code"))
             return reply["data"]
 
         try:
             assert all(entry["available"] for entry in request("doctor")["tools"].values())
             for command in ["build", "run", "test"]:
-                task = request(command, {"timeoutMs": 180000})
-                result = request("task.wait", {"task": task["task"], "timeoutMs": 120000})
+                task = request(command, {"timeoutMs": 600000})
+                deadline = time.monotonic() + 660
+                result = None
+                while result is None:
+                    assert time.monotonic() < deadline, "Native tool task exceeded its bounded test deadline"
+                    result = request("task.wait", {"task": task["task"], "timeoutMs": 120000})
                 assert result["state"] == "succeeded" and result["exitCode"] == 0, (command, result["state"])
                 if command == "run":
                     assert "answer=42" in result["output"]

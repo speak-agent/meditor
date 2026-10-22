@@ -18,6 +18,14 @@ int main(int argc, char** argv) {
 #endif
     if (argc == 1) return 0;
     std::string mode = argv[1];
+    if (const auto* logDirectory = std::getenv("MEDITOR_FIXTURE_ENV_LOG")) {
+        Json environment = Json::object();
+        for (const auto* key : {"MCPP_HOME", "MCPPLS_CACHE_DIR", "TMPDIR", "TEMP", "TMP"})
+            if (const auto* value = std::getenv(key)) environment[key] = value;
+        std::filesystem::create_directories(logDirectory);
+        std::ofstream output(std::filesystem::path(logDirectory) / (mode == "serve" ? "language.json" : "task.json"));
+        output << environment.dump();
+    }
     if (mode == "sleep") { std::this_thread::sleep_for(std::chrono::seconds(60)); return 0; }
     if (mode == "echo") { for (int i = 2; i < argc; ++i) std::println("{}", argv[i]); return 0; }
     if (mode == "fail") return 17;

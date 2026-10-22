@@ -84,8 +84,8 @@ class Language {
         closed_ = true; ready_.notify_all();
     }
 public:
-    Language(const std::filesystem::path& tool, const std::filesystem::path& driver, const std::filesystem::path& root) {
-        process_.start({tool.string(), "serve"}, root, false);
+    Language(const std::filesystem::path& tool, const std::filesystem::path& driver, const std::filesystem::path& root, const ProcessEnvironment& environment) {
+        process_.start({tool.string(), "serve"}, root, false, environment);
         reader_ = std::jthread([this](std::stop_token stop) { receive_(stop); });
         try {
             auto init = request("initialize", {{"processId", nullptr}, {"rootUri", make_uri(root)}, {"clientInfo", {{"name", "meditor"}, {"version", "0.0.1"}}},
@@ -142,6 +142,7 @@ struct Application::Impl {
     std::map<std::string, std::unique_ptr<Task>> tasks;
     std::unique_ptr<Language> language;
     std::unique_ptr<SettingsStore> settings;
+    RuntimeDirectories runtime;
     bool trusted {};
     std::uint64_t nextDocument {1}, nextTask {1};
     std::filesystem::path resolve(std::string value) const {
@@ -182,7 +183,10 @@ struct Application::Impl {
     void require_trust() const { if (!trusted) throw CommandError("workspace-untrusted", "Explicitly trust this workspace before executing tools"); }
     void sync(Record& record) {
         require_trust();
-        if (!language) language = std::make_unique<Language>(tool("mcppls"), tool("mcpp"), root);
+        if (!language) {
+            runtime.prepare_tools();
+            language = std::make_unique<Language>(tool("mcppls"), tool("mcpp"), root, runtime.tool_environment());
+        }
         auto uri = make_uri(resolve(record.path));
         if (!record.synced) language->notify("textDocument/didOpen", {{"textDocument", {{"uri", uri}, {"languageId", "cpp"}, {"version", ++record.lspVersion}, {"text", record.document.text()}}}});
         else if (record.synced != record.document.revision()) language->notify("textDocument/didChange", {{"textDocument", {{"uri", uri}, {"version", ++record.lspVersion}}}, {"contentChanges", Json::array({{{"text", record.document.text()}}})}});
@@ -204,11 +208,13 @@ struct Application::Impl {
             }
             if (completed != tasks.end()) tasks.erase(completed);
         }
+        runtime.prepare_tools();
+        auto environment = runtime.tool_environment();
         auto id = "t" + std::to_string(nextTask++); auto task = std::make_unique<Task>(); auto raw = task.get(); auto cwd = root;
-        task->worker = std::jthread([raw, cwd, arguments = std::move(arguments), timeout](std::stop_token stop) {
+        task->worker = std::jthread([raw, cwd, arguments = std::move(arguments), environment = std::move(environment), timeout](std::stop_token stop) {
             int code = 125; std::string state = "failed";
             try {
-                Process process; process.start(arguments, cwd); process.close_input(); auto deadline = Clock::now() + std::chrono::milliseconds(timeout);
+                Process process; process.start(arguments, cwd, true, environment); process.close_input(); auto deadline = Clock::now() + std::chrono::milliseconds(timeout);
                 while (true) {
                     auto read = process.read(std::chrono::milliseconds(30));
                     { std::lock_guard lock(raw->mutex); auto room = 2 * 1024 * 1024 - raw->output.size(); raw->output += read.data.substr(0, room); raw->truncated = raw->truncated || read.data.size() > room; }
@@ -276,7 +282,7 @@ struct Application::Impl {
             return summary(id, record);
         }
         if (command == "doctor") {
-            Json result = {{"version", "0.0.1"}, {"tools", Json::object()}};
+            Json result = {{"version", "0.0.1"}, {"tools", Json::object()}, {"runtime", {{"mode", runtime.portable ? "portable" : "installed"}, {"managedToolHomes", true}}}};
             for (auto name : {"mcpp", "mcppls"}) { try { tool(name); result["tools"][name] = {{"available", true}}; } catch (...) { result["tools"][name] = {{"available", false}}; } }
             return result;
         }
@@ -327,10 +333,18 @@ struct Application::Impl {
         throw CommandError("unknown-command", "Command is not implemented; query capabilities");
     }
 };
-Application::Application(std::filesystem::path workspace, std::filesystem::path toolRoot, std::filesystem::path settingsFile) : impl_(std::make_unique<Impl>()) {
+Application::Application(std::filesystem::path workspace, std::filesystem::path toolRoot, std::filesystem::path settingsFile, const RuntimeOptions& runtime) : impl_(std::make_unique<Impl>()) {
     impl_->root = std::filesystem::weakly_canonical(workspace);
     if (!std::filesystem::is_directory(impl_->root)) throw std::runtime_error("Workspace directory does not exist");
-    impl_->tools = toolRoot.empty() ? executable_directory() / "tools" : std::filesystem::absolute(toolRoot);
+    impl_->runtime = RuntimeDirectories::resolve(runtime);
+    const auto binary = runtime.binaryDirectory.empty() ? executable_directory() : runtime.binaryDirectory;
+    impl_->tools = toolRoot.empty() ? binary / "tools" : std::filesystem::absolute(toolRoot);
+    if (settingsFile.empty()) settingsFile = impl_->runtime.settings_file();
+    else if (impl_->runtime.portable) {
+        const auto relative = std::filesystem::weakly_canonical(std::filesystem::absolute(settingsFile)).lexically_relative(impl_->runtime.dataRoot);
+        if (relative.empty() || relative == "." || relative.is_absolute() || *relative.begin() == "..")
+            throw std::runtime_error("Portable settings must stay within the application data directory");
+    }
     impl_->settings = std::make_unique<SettingsStore>(std::move(settingsFile));
 }
 Application::~Application() = default;

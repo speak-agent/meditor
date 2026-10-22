@@ -29,8 +29,9 @@ int main() {
     struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup {directory};
     auto file = (directory / "settings.json").string();
     std::string executable = "meditor-gui", option = "--settings-file";
-    char* arguments[] = {executable.data(), option.data(), file.data()};
-    meditor::ui::configure(3, arguments);
+    std::string dataOption = "--data-root", dataRoot = (directory / "runtime").string();
+    char* arguments[] = {executable.data(), option.data(), file.data(), dataOption.data(), dataRoot.data()};
+    meditor::ui::configure(5, arguments);
     Application application(meditor::ui::workbench, {.window = {.chrome_mode = WindowChromeMode::Custom, .caption_labels = {.minimize = "Minimize", .toggle_maximize = "Maximize", .close = "Close"}}, .show_debug_overlay = false});
     for (Size viewport : {Size{390, 844}, Size{800, 600}, Size{1200, 800}}) {
         UiTest ui(application, {.viewport = viewport});

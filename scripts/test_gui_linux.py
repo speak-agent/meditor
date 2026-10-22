@@ -40,7 +40,7 @@ def main():
     if args.binary:
         binary = args.binary.resolve()
     else:
-        candidates = [p for p in Path("target").glob("**/bin/meditor-gui/meditor-gui") if p.is_file()]
+        candidates = [p for p in Path("target").glob("**/bin/meditor-gui/meditor-gui") if p.is_file() and "dist" not in p.parts and "candidates" not in p.parts]
         if not candidates:
             raise SystemExit("Missing native GUI target")
         binary = max(candidates, key=lambda p: p.stat().st_mtime).resolve()
@@ -68,6 +68,7 @@ def main():
         "XOpenDisplay": ([c.c_char_p], c.c_void_p),
         "XDefaultRootWindow": ([c.c_void_p], c.c_ulong),
         "XSetInputFocus": ([c.c_void_p, c.c_ulong, c.c_int, c.c_ulong], c.c_int),
+        "XGetInputFocus": ([c.c_void_p, c.POINTER(c.c_ulong), c.POINTER(c.c_int)], c.c_int),
         "XRaiseWindow": ([c.c_void_p, c.c_ulong], c.c_int),
         "XFlush": ([c.c_void_p], c.c_int),
         "XSync": ([c.c_void_p, c.c_int], c.c_int),
@@ -92,7 +93,9 @@ def main():
         original = "export module demo;\nexport int value() { return 42; }\n"
         source.write_bytes(original.encode())
         environment = os.environ.copy(); environment.update(GDK_BACKEND="x11", GSK_RENDERER="cairo")
-        process = subprocess.Popen([str(binary), "--workspace", str(root), "--open", "main.cppm", "--settings-file", str(root / "settings.json")], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        process = subprocess.Popen([str(binary), "--workspace", str(root), "--open", "main.cppm", "--settings-file", str(root / "settings.json"), "--data-root", str(root / "runtime")], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        window = None
+        pressed = set()
         try:
             def find_window():
                 if process.poll() is not None:
@@ -115,11 +118,22 @@ def main():
             xt.XTestFakeButtonEvent(display, 1, 1, 0); xt.XTestFakeButtonEvent(display, 1, 0, 0)
             x.XSync(display, 0); time.sleep(0.2)
 
+            def require_focus():
+                focused, revert = c.c_ulong(), c.c_int()
+                x.XGetInputFocus(display, c.byref(focused), c.byref(revert))
+                if focused.value != window:
+                    raise RuntimeError("Native GUI lost keyboard focus; input injection stopped")
+
             def key(name, down):
+                require_focus()
                 code = x.XKeysymToKeycode(display, x.XStringToKeysym(name.encode()))
                 if not code:
                     raise RuntimeError("Required keyboard mapping is missing")
                 xt.XTestFakeKeyEvent(display, code, down, 0)
+                if down:
+                    pressed.add(code)
+                else:
+                    pressed.discard(code)
 
             def chord(name):
                 key("Control_L", 1); key(name, 1); key(name, 0); key("Control_L", 0)
@@ -144,7 +158,15 @@ def main():
             process.wait(timeout=10)
             if process.returncode != 0:
                 raise RuntimeError("Native GUI did not exit cleanly")
+        except Exception:
+            if args.screenshot and window and process.poll() is None:
+                failure_image = args.screenshot.with_name(args.screenshot.stem + "-failure.png")
+                subprocess.run(["import", "-window", hex(window), str(failure_image)], capture_output=True, timeout=10)
+            raise
         finally:
+            for code in pressed:
+                xt.XTestFakeKeyEvent(display, code, 0, 0)
+            x.XSync(display, 0)
             if process.poll() is None:
                 process.terminate()
                 try:

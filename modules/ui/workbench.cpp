@@ -12,11 +12,13 @@ namespace {
 std::filesystem::path initialWorkspace;
 std::filesystem::path initialTools;
 std::filesystem::path initialSettings;
+meditor::RuntimeOptions initialRuntime;
 std::string initialDocument;
 struct WorkspaceModel {
     std::shared_ptr<meditor::Application> application;
     std::shared_ptr<meditor::Application> preferences;
     std::filesystem::path settingsFile;
+    meditor::RuntimeOptions runtime;
     std::vector<std::string> files;
     std::map<std::string, std::shared_ptr<EditorState>> editors;
     std::vector<std::string> tabs;
@@ -38,7 +40,7 @@ struct WorkspaceModel {
         reducedMotion = state.at("values").at("reducedMotion").get<bool>();
     }
     void load(std::filesystem::path root) {
-        auto next = std::make_shared<meditor::Application>(root, initialTools, settingsFile);
+        auto next = std::make_shared<meditor::Application>(root, initialTools, settingsFile, runtime);
         auto response = next->execute({{"command", "workspace.files"}});
         files.clear(); if (response.value("ok", false)) for (const auto& file : response["data"]["files"]) files.push_back(file.get<std::string>());
         name = root.filename().string(); application = std::move(next); editors.clear(); tabs.clear(); active.clear(); selected = true;
@@ -52,6 +54,8 @@ void configure(int argc, char** argv) {
         if (argument == "--workspace" && i + 1 < argc) initialWorkspace = argv[++i];
         else if (argument == "--tool-root" && i + 1 < argc) initialTools = argv[++i];
         else if (argument == "--settings-file" && i + 1 < argc) initialSettings = argv[++i];
+        else if (argument == "--data-root" && i + 1 < argc) initialRuntime.dataRoot = std::filesystem::u8path(argv[++i]);
+        else if (argument == "--portable") initialRuntime.portable = true;
         else if (argument == "--open" && i + 1 < argc) initialDocument = argv[++i];
     }
 }
@@ -95,10 +99,15 @@ View workbench() {
         Lifecycle([data, refresh, open, host] {
             try {
                 data->settingsFile = initialSettings;
+                data->runtime = initialRuntime;
 #if defined(__ANDROID__)
+                const auto& directories = host.Directories();
+                if (data->runtime.dataRoot.empty()) data->runtime.dataRoot = std::filesystem::u8path(directories.data_directory.Path());
+                if (data->runtime.binaryDirectory.empty() && directories.executable_directory)
+                    data->runtime.binaryDirectory = std::filesystem::u8path(directories.executable_directory->Path());
                 if (data->settingsFile.empty()) data->settingsFile = std::filesystem::u8path(host.Directories().data_directory.Child("settings.json").Path());
 #endif
-                data->preferences = std::make_shared<meditor::Application>(std::filesystem::current_path(), initialTools, data->settingsFile);
+                data->preferences = std::make_shared<meditor::Application>(std::filesystem::current_path(), initialTools, data->settingsFile, data->runtime);
                 auto settings = data->preferences->execute({{"command", "settings.get"}});
                 if (settings.value("ok", false)) {
                     data->adopt_settings(settings["data"]);
