@@ -47,7 +47,7 @@ def main():
         if arguments(catalogs["en"][key]) != arguments(catalogs["zh"][key]):
             raise ValueError("Different translation arguments: " + key)
     referenced = set()
-    for source in [*ROOT.glob("src/*.cpp"), *ROOT.glob("modules/ui/*.cpp")]:
+    for source in ROOT.glob("src/**/*.cpp"):
         referenced.update(re.findall(r'\b(?:t|text|notice)\("([A-Za-z0-9_.-]+)"', source.read_text(encoding="utf-8")))
     for source in ROOT.glob("modules/application/src/*.cpp"):
         referenced.update("error." + code for code in re.findall(r'(?:CommandError|SettingsError)\("([A-Za-z0-9_-]+)"', source.read_text(encoding="utf-8")))

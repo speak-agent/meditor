@@ -104,7 +104,7 @@ int main() {
     require(read(root / "legacy.cppm") == "a\rb");
     // The real workbench must retain BOM/CRLF through select-all, save and undo.
     const std::string original = "\xef\xbb\xbf" "export module demo;\r\n// 你好🙂\r\n";
-    std::vector<std::string> arguments {"meditor-gui", "--workspace", root.string(), "--open", "main.cppm", "--data-root", (root / "runtime").string()};
+    std::vector<std::string> arguments {"meditor", "--workspace", root.string(), "--open", "main.cppm", "--data-root", (root / "runtime").string()};
     std::vector<char*> pointers; for (auto& argument : arguments) pointers.push_back(argument.data());
     meditor::ui::configure(static_cast<int>(pointers.size()), pointers.data());
     for (auto viewport : {Size{390, 844}, Size{800, 600}, Size{1200, 800}}) {

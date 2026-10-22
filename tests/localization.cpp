@@ -24,7 +24,7 @@ int main() {
     struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup {directory};
     const auto source = directory / "main.cppm", settings = directory / "settings.json";
     const std::string original = "export module demo;\n", suffix = "// 你好🙂\n";
-    std::vector<std::string> arguments {"meditor-gui", "--workspace", directory.string(), "--open", "main.cppm", "--settings-file", settings.string(), "--data-root", (directory / "runtime").string()};
+    std::vector<std::string> arguments {"meditor", "--workspace", directory.string(), "--open", "main.cppm", "--settings-file", settings.string(), "--data-root", (directory / "runtime").string()};
     std::vector<char*> pointers; for (auto& argument : arguments) pointers.push_back(argument.data());
     meditor::ui::configure(static_cast<int>(pointers.size()), pointers.data());
     for (const auto viewport : {Size{390, 844}, Size{800, 600}, Size{1200, 800}}) {

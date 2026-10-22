@@ -6,14 +6,14 @@
 python3 scripts/prepare_payloads.py --target x86_64-linux-gnu
 mcpp build --features test-support
 python3 scripts/run_cli_tests.py --native-tools
-mcpp build -p meditor-gui
+mcpp build -p meditor
 ```
 
 Other native payload targets are `aarch64-linux-gnu`, `aarch64-macos` and `x86_64-windows-msvc`. A prepared tree is stored under `target/payloads/<target>`. The inventory contains only relative entries and source URLs; preparation verifies the pinned archive and subsequent builds verify every file against the inventory. A changed tree is rejected; prepare a new directory when updating inputs.
 
-The root `build.mcpp` uses the independently testable `meditor-distribution` placement planner in `mcpp/distribution` and `mcpp::deploy`. It places the tools beside the CLI. The GUI declares the matching CLI as an mcpp dependency artifact and inherits its runtime tool placements. mcpp remains responsible for platform bundles, runtime closure and installer formats. Test fixtures require `test-support` and are absent from ordinary product builds.
+The root `build.mcpp` uses the independently testable `meditor-distribution` placement planner in `mcpp/distribution` and `mcpp::deploy`. It places the tools beside the single meditor application; GUI and explicit --cli mode use the same payload and resources. mcpp remains responsible for platform bundles, runtime closure and installer formats. Test fixtures require `test-support` and are absent from ordinary product builds.
 
-A development build without prepared tools is allowed and reports their absence through `meditor doctor`. Native packaging requires prepared tools. The current Linux directory-package probe found that the dependency CLI artifact retains development interpreter/RPATH values; relocation on the build machine is insufficient evidence until this is corrected and tested without those paths. Preparing a payload does not certify an installer: clean-machine runtime, signatures, upgrade/uninstall, source examples and artifact privacy remain required release checks.
+A development build without prepared tools is allowed and reports their absence through `meditor --cli doctor`. Native packaging requires prepared tools. The current Linux directory-package probe found that earlier dependency artifacts retained development interpreter/RPATH values; relocation on the build machine is insufficient evidence until this is corrected and tested without those paths. Preparing a payload does not certify an installer: clean-machine runtime, signatures, upgrade/uninstall, source examples and artifact privacy remain required release checks.
 
 ## Candidate source and privacy checks
 

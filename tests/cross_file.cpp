@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
     }
     const std::string source = "\xef\xbb\xbf" "export module sample;\r\nexport int value() { return 42; }\r\n";
     const std::string target = "export module target;\nexport int value();\n";
-    std::vector<std::string> arguments {"meditor-gui", "--workspace", project.string(), "--open", "main.cppm", "--tool-root", tools.string(), "--settings-file", settings.string(), "--data-root", (root / "runtime").string()};
+    std::vector<std::string> arguments {"meditor", "--workspace", project.string(), "--open", "main.cppm", "--tool-root", tools.string(), "--settings-file", settings.string(), "--data-root", (root / "runtime").string()};
     std::vector<char*> pointers; for (auto& argument : arguments) pointers.push_back(argument.data());
     meditor::ui::configure(static_cast<int>(pointers.size()), pointers.data());
     const auto key = [](std::string value) { return UiSelector::Key(std::move(value)); };

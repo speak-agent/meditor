@@ -8,6 +8,7 @@ import meditor.document;
 import meditor.platform;
 import meditor.ui.editor;
 import meditor.ui.theme;
+import meditor.shortcuts;
 
 namespace meditor::ui {
 using namespace huxerui;
@@ -676,19 +677,21 @@ View workbench(WorkspaceServices services) {
             }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))
         }.With(Background(background), Foreground(ink), CrossAlign(CrossAxisAlignment::Stretch))
             .On<ViewEvents::KeyIntercept>([save, data, refresh, openSearch, queryLanguage](const KeyEvent& event) {
-                if (event.type == KeyEventType::Down && event.key == Key::Escape && data->aboutOpen) {
+                const auto shortcut = shortcuts::resolve(event, shortcuts::Context::Workbench);
+                if (!shortcut) return false;
+                if (*shortcut == shortcuts::Command::Dismiss && data->aboutOpen) {
                     if (!data->licenseId.empty()) data->licenseId.clear(); else data->aboutOpen = false;
                     refresh(); return true;
                 }
-                if (event.type == KeyEventType::Down && event.key == Key::Escape && data->settingsOpen) { data->settingsOpen = false; refresh(); return true; }
-                if (event.type == KeyEventType::Down && event.key == Key::Escape && !data->searchOpen && data->bottomPanel == "language" && !data->languageOperation.empty()) {
+                if (*shortcut == shortcuts::Command::Dismiss && data->settingsOpen) { data->settingsOpen = false; refresh(); return true; }
+                if (*shortcut == shortcuts::Command::Dismiss && !data->searchOpen && data->bottomPanel == "language" && !data->languageOperation.empty()) {
                     data->close_language(); if (!data->active.empty()) data->editors.at(data->active)->request_focus(); refresh(); return true;
                 }
-                if (event.type == KeyEventType::Down && event.key == Key::Escape && !data->searchOpen && data->bottomPanel == "output") { data->bottomPanel.clear(); if (!data->active.empty()) data->editors.at(data->active)->request_focus(); refresh(); return true; }
-                if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.modifiers.shift && (event.key == Key::O || event.key == Key::M)) { queryLanguage(event.key == Key::O ? "symbols" : "diagnostics"); return true; }
-                if (event.type == KeyEventType::Down && event.key == Key::F12) { queryLanguage(event.modifiers.shift ? "references" : "definition"); return true; }
-                if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::F) { openSearch(); return true; }
-                if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::S) { save(); return true; } return false;
+                if (*shortcut == shortcuts::Command::Dismiss && !data->searchOpen && data->bottomPanel == "output") { data->bottomPanel.clear(); if (!data->active.empty()) data->editors.at(data->active)->request_focus(); refresh(); return true; }
+                if (*shortcut == shortcuts::Command::Outline || *shortcut == shortcuts::Command::Problems) { queryLanguage(*shortcut == shortcuts::Command::Outline ? "symbols" : "diagnostics"); return true; }
+                if (*shortcut == shortcuts::Command::Definition || *shortcut == shortcuts::Command::References) { queryLanguage(*shortcut == shortcuts::Command::References ? "references" : "definition"); return true; }
+                if (*shortcut == shortcuts::Command::Find) { openSearch(); return true; }
+                if (*shortcut == shortcuts::Command::Save) { save(); return true; } return false;
             });
         page = std::move(page).With(Dialog{
             .visible = data->searchOpen,

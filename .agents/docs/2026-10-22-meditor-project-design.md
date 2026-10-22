@@ -141,7 +141,11 @@ meditor/
   mcpp.toml
   mcpp.lock
   build.mcpp
-  src/                   GUI / CLI 入口与装配
+  src/                   单一 meditor 应用入口、GUI/CLI 装配及内部代码
+    ui/                  工作台与编辑视图（内部模块，不是独立包）
+    launch.cppm/.cpp     启动模式和文件/目录路由
+    cli.cppm/.cpp        命令行分组、JSONL 会话及输出
+    shortcuts.cppm/.cpp  应用默认快捷键与上下文匹配
   modules/
     document/           文档、位置索引、事务、撤销重做
     editor/             可见行布局、光标、选择、编辑命令、装饰
@@ -151,7 +155,6 @@ meditor/
     mcpp/               CLI 协议、任务、包与工具链数据适配
     lsp/                JSON-RPC/LSP 客户端及 cxxModules 扩展
     platform/           文件、进程、调度、平台文件授权
-    ui/                 HuxerUI 编辑面与工作台页面
     i18n/               可复用的语言选择、消息键、格式化与回退
     onboarding/         Quick Start 状态、步骤与结果验证
     about/              产品及随包依赖元数据的运行时读取与呈现
@@ -377,11 +380,11 @@ huxerui.huxerui = { git = "https://github.com/Sunrisepeak/HuxerUI.git", branch =
 
 文档缓冲/事务是优先评估的可复用组件；代码编辑控件、平台工具宿主是否独立，取决于职责和实际依赖。命令常量、少量 JSON 转换、单个平台辅助函数留在所属包内，不为目录对称拆包。当前初始实现中的包划分只是候选，不因已创建 manifest 就默认通过此标准。
 
-workspace 根统一维护成员、共享依赖、标准和工具链；GUI、CLI 作为应用目标/成员，共享组件包。以下是结构示意，不代表每个目录现已实现，也不要求立即将所有候选拆包：
+workspace 根统一维护成员、共享依赖、标准和工具链；GUI、CLI 作为同一根应用 `meditor` 的启动模式，共享组件包；应用内部代码归 `src/`，独立组件包才放 `modules/`。以下是结构示意，不代表每个目录现已实现，也不要求立即将所有候选拆包：
 
 ```toml
 [workspace]
-members = ["modules/core", "modules/platform", "modules/application", "apps/cli", "apps/gui"]
+members = ["modules/document", "modules/platform", "modules/application", "mcpp/distribution"]
 
 [workspace.package]
 version = "0.0.1"
@@ -392,7 +395,7 @@ mcpp = ">=2026.10.10.1"
 default = "llvm@23.1.3"
 
 [workspace.dependencies]
-meditor-core = { path = "modules/core" }
+meditor-document = { path = "modules/document" }
 
 [workspace.dependencies.huxerui]
 huxerui = { git = "https://github.com/Sunrisepeak/HuxerUI.git", branch = "meditor" }
@@ -861,3 +864,41 @@ Problems/Outline 首次接入见 [语言面板记录](2026-10-22-language-panels
 工作区内跨文件导航进展见 [定义与引用记录](2026-10-22-cross-file-navigation.md)：GUI/CLI 共用规范位置与精确目标快照，提供 F12/Shift+F12、跨文件打开/选择/焦点交接及引用列表复用；内容变化会拒绝旧位置，保留未保存缓冲区。依赖/SDK 只读源码能力、历史导航、文件监视、异步存储验证、性能与四端原生验收仍待完成。
 
 工作台视觉与构建反馈进展见 [配色、标签及输出记录](2026-10-22-workbench-appearance-and-output.md)：统一深浅主题、主要操作层级、原生 Tabs 及减少动画；任务输出在结束前更新，输出/语言结果共享底部区域，按真实终态停止进度动画。target、缓存、阶段详情、增量输出及四端视觉/性能/真机证据继续保留，不据此宣称产品验收完成。
+
+
+## 18. 单一应用、命令行与快捷键
+
+根包只交付一个产品应用 `meditor`；删除独立 GUI 应用包，GUI、CLI 共用入口、内核和打包资源。`src/` 容纳入口及应用内部代码，UI 按职责放 `src/ui/`，启动路由、CLI、快捷键各有 `.cppm` 声明与 `.cpp` 实现。`modules/` 仅保留带独立 manifest 的可复用组件包，不能把内部代码集合当作独立组件。测试协议载荷和独立接口消费工程放在 `mcpp/test-support` 与 `mcpp/test-consumers`，不混入根应用的自动测试发现，也不随正式产品默认构建。
+
+### 18.1 启动与命令分层
+
+| 调用 | 行为 |
+| --- | --- |
+| `meditor` | 打开 GUI 欢迎页 |
+| `meditor main.cpp` | 以文件父目录为工作区，通过 GUI 打开文件；文件不存在时由普通文档打开流程处理 |
+| `meditor DIRECTORY` | 在 GUI 打开工作区 |
+| `meditor --workspace DIR main.cpp` | 在指定工作区打开相对文件，拒绝越出该工作区 |
+| `meditor --gui -- -draft.cpp` | 显式 GUI 模式，`--` 后的内容按文件名处理 |
+| `meditor --help` / `meditor --version` | 输出说明/版本，不初始化图形窗口 |
+| `meditor --cli capabilities --format json` | 显式无窗口命令模式，发现命令与 schema |
+| `meditor --cli workspace status --format json` | 分组命令；其他组包括 document、task、language、modules、project、package、toolchain、environment、settings |
+| `meditor --cli document.open --params JSON --format json` | 同一命令的带点 API 名称也可使用；JSON 参数及错误保持共享应用协议 |
+| `meditor --cli serve --stdio --workspace DIR` | 持久 JSONL 会话，保留文档/任务，stdout 仅输出协议，错误提示使用 stderr |
+
+不把裸 `build`、`serve` 等词隐式当命令，避免与同名文件冲突；终端/Agent 命令明确带 `--cli`。GUI 首版接收一个位置路径；冲突的文件/工作区、重复选项及多余位置参数报错，不默默取最后一个。`--workspace`、`--open`、工具/设置/数据根和便携参数保持原有职责。CLI 指令分组只是人类入口，底层命令 ID、revision、事务、信任、路径和隐私边界不变；不透传任意 shell 文本给 mcpp/mcppls。
+
+CLI 分支不调用 `RunApplication`，无需 DISPLAY/Wayland 会话；统一应用仍链接 GUI 依赖，不能据此宣称可免装所有 GUI 动态依赖。Windows 使用同一个 GUI 子系统程序，CLI 尝试连接调用它的父控制台并保留重定向 stdin/stdout/stderr；不为普通 GUI 启动创建额外控制台。
+
+同一二进制不等于已有跨进程共享会话。当前 CLI 服务和 GUI 各自持有应用会话；Agent 连接已运行 GUI、控制未保存缓冲区，以及复用窗口/跨进程会话发现、认证和生命周期仍需实现。不能把重新打开磁盘文件当作控制 GUI 会话。
+
+### 18.2 快捷键模块
+
+`meditor.shortcuts` 统一默认绑定、语义命令 ID、文案键、平台展示与匹配，工作台与编辑器使用同一注册表，避免散落的按键条件。Primary 在界面展示为 Windows/Linux 的 Ctrl、macOS 的 Cmd；匹配兼容 Ctrl/Meta，拒绝多余 Alt/Shift，避免把 AltGr 或另一个组合误判为保存/导航。
+
+工作台处理 Save、Find、Problems、Outline、Definition/References 及有优先级的 Escape；编辑器处理 Select All、Undo/Redo。文本移动、剪贴板与 IME 继续走文本输入边界；组合输入期间不抢文本编辑快捷键。全局动作不因按键自动重复触发，编辑历史允许重复。搜索/模态层、面板及源码焦点交接沿用实际视图树规则。
+
+后续菜单、工具提示、命令面板和快捷键设置复用该注册表；自定义映射、冲突提示、持久化、多键序列及原生平台约定仍需补齐。本次模块化不冒充完整可配置快捷键产品。
+
+### 18.3 验证与门禁
+
+启动路由覆盖 GUI 默认、文件/目录、Unicode/空格、横线文件名、显式 CLI 与冲突拒绝；同一实际程序覆盖无图形会话帮助/JSON/服务、命令分组及 stdout 重定向。快捷键覆盖上下文、精确修饰键、AltGr、repeat 与冲突，既有真实视图树测试继续验证输入、保存、IME、搜索和导航。CI 使用根应用构建和测试，不再构建第二个 GUI 产品。Linux 原生文件启动与 Windows/macOS/Android 编译/运行结果分别记录，四端 A01–A13 产品门禁保持不变。

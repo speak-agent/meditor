@@ -28,7 +28,7 @@ int main() {
     std::filesystem::create_directories(directory);
     struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup {directory};
     auto file = (directory / "settings.json").string();
-    std::string executable = "meditor-gui", option = "--settings-file";
+    std::string executable = "meditor", option = "--settings-file";
     std::string dataOption = "--data-root", dataRoot = (directory / "runtime").string();
     char* arguments[] = {executable.data(), option.data(), file.data(), dataOption.data(), dataRoot.data()};
     meditor::ui::configure(5, arguments);

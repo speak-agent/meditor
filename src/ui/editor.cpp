@@ -3,6 +3,7 @@
 module meditor.ui.editor;
 import std;
 import huxerui;
+import meditor.shortcuts;
 import meditor.application;
 import meditor.document;
 import meditor.syntax;
@@ -256,11 +257,11 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     }
     TextInputKeyResult HandleTextKey(const KeyEvent& event) override {
         if (event.type != KeyEventType::Down) return TextInputKeyResult::Unhandled;
-        bool control = event.modifiers.control || event.modifiers.meta;
         if (value.composition) return TextInputKeyResult::Unhandled;
-        if (control && event.key == Key::A) { auto next = value; next.selection = {0, units(next.text)}; publish_(next); return TextInputKeyResult::Handled; }
-        if (control && (event.key == Key::Z || event.key == Key::Y)) {
-            application->execute({{"command", event.key == Key::Y || event.modifiers.shift ? "document.redo" : "document.undo"}, {"params", {{"document", document}, {"revision", documentRevision}}}}); refresh_(); if (changed) changed(); return TextInputKeyResult::Handled;
+        const auto shortcut = shortcuts::resolve(event, shortcuts::Context::Editor);
+        if (shortcut == shortcuts::Command::SelectAll) { auto next = value; next.selection = {0, units(next.text)}; publish_(next); return TextInputKeyResult::Handled; }
+        if (shortcut == shortcuts::Command::Undo || shortcut == shortcuts::Command::Redo) {
+            application->execute({{"command", shortcut == shortcuts::Command::Redo ? "document.redo" : "document.undo"}, {"params", {{"document", document}, {"revision", documentRevision}}}}); refresh_(); if (changed) changed(); return TextInputKeyResult::Handled;
         }
         auto next = value; auto endings = line_endings_(); auto selection = next.selection.Range(); auto caret = next.selection.active;
         auto move = [&](TextOffset target) { if (!event.modifiers.shift) next.selection.anchor = target; next.selection.active = target; };

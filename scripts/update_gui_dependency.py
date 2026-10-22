@@ -15,7 +15,7 @@ SOURCE = "git+https://github.com/Sunrisepeak/HuxerUI.git#branch=meditor@"
 
 
 def main():
-    manifest = tomllib.loads((ROOT / "apps/gui/mcpp.toml").read_text(encoding="utf-8"))
+    manifest = tomllib.loads((ROOT / "mcpp.toml").read_text(encoding="utf-8"))
     dependency = manifest["dependencies"]["huxerui"]["huxerui"]
     if dependency != {"git": "https://github.com/Sunrisepeak/HuxerUI.git", "branch": "meditor"}:
         raise ValueError("Unexpected GUI dependency declaration")

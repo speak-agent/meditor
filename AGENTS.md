@@ -11,13 +11,13 @@
 
 - 使用 **mcpp + C++23 Modules** 构建；mcpp 用法见 [skill](.agents/skills/mcpp-usage/SKILL.md)。以当前 mcpp 文档与实际行为为准。
 - C++ 命名与编码遵循 [mcpp-style-ref](.agents/skills/mcpp-style-ref/SKILL.md) 和 [详细参考](.agents/skills/mcpp-style-ref/reference.md)；本文件的构建、目录与接口分离约定优先。
-- 使用 mcpp workspace 划分应用与组件，共享版本、工具链和依赖。编辑器运行时自研组件放在 `modules/<component>/`；自有 mcpp 构建插件及仅构建期依赖放在根级 `mcpp/`，通过 `[build-dependencies]` 引用，不混入运行时依赖；仅职责独立、接口稳定、可独立构建测试且有复用/分发价值的子系统设独立 `mcpp.toml`，不因一两个文件拆包。普通内部模块保留在所属包。应用目录只留入口与装配，README 保持简洁。
+- 根包只有一个产品应用 `meditor`，兼具 GUI 与显式 `--cli` 模式；入口、装配及 UI、命令行、快捷键等应用内部代码放在 `src/`，按职责分子目录，不再拆 `apps/gui`、`apps/cli`。`modules/<component>/` 只放有独立 `mcpp.toml`、可独立构建测试且有复用/分发价值的运行时组件包；普通代码集合不放到 `modules/`，也不为目录对称增加包。自有 mcpp 构建插件、仅构建期依赖及测试构建辅助放在根级 `mcpp/`，不混入产品运行时；各包内部模块保留在所属包的 `src/`。共享版本、工具链和依赖，README 保持简洁。
 - `.cppm` 声明模块接口，配套 `.cpp` 使用 `module <name>;` 实现；模板、constexpr 及必须可见的定义留在接口。使用 `import std;`，传统头文件限制在第三方或平台适配边界。
 - 必需头文件收敛到最小适配模块和实现单元，私有 include 路径不外泄；不在多个公共模块重复包含重头文件。openkal 优先评估为平台实现候选，不未经兼容验证就替换 GUI 进程的 C/C++ 运行时。
 - 优先复用 [mcpp-index](https://github.com/mcpp-community/mcpp-index) 中维护良好、质量可靠、覆盖目标平台的库；核对实际平台支持、依赖体积与许可证，避免重复自研通用设施。
 - mcpp、mcppls 按平台携完整运行载荷随包分发，通过现有 CLI/JSON、LSP 接口原生集成，不修改两者源码。产品统一通过 meditor GUI/CLI 操作，不要求用户或 Agent 直接调用底层工具。
 - 使用统一自绘标题栏与底部状态栏/设置入口；保留各平台窗口控制、安全区和辅助访问。必须支持 headless 的真实视图树布局、交互及虚拟时钟动画测试，原生窗口/IME/真机验证另行保留。
-- GUI 与 CLI 复用命令、状态和事务；功能同时设计机器可读操作，支持无窗口测试与 Agent 控制。视觉、布局、动画、键盘与触摸交互作为产品验收内容。
+- `meditor` / `meditor FILE` 默认进入 GUI，`meditor --cli` 显式进入无窗口命令模式；快捷键集中到应用内部模块，按上下文分派并保留 IME/文本控件处理优先级。GUI 与 CLI 复用命令、状态和事务；功能同时设计机器可读操作，支持无窗口测试与 Agent 控制。视觉、布局、动画、键盘与触摸交互作为产品验收内容。
 - 使用 mcpp 插件体系打包及生成安装器；缺失的开发工具优先补充到 xim-pkgindex，库依赖优先从 mcpp-index 选择。
 
 ## HuxerUI

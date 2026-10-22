@@ -38,8 +38,8 @@ def main():
         shutil.copytree(package, work / "package")
         consumer = work / "consumer"
         (consumer / "src").mkdir(parents=True)
-        shutil.copy2(ROOT / "tests/consumers/document/src/main.cpp", consumer / "src/main.cpp")
-        manifest = (ROOT / "tests/consumers/document/mcpp.toml").read_text(encoding="utf-8")
+        shutil.copy2(ROOT / "mcpp/test-consumers/document/src/main.cpp", consumer / "src/main.cpp")
+        manifest = (ROOT / "mcpp/test-consumers/document/mcpp.toml").read_text(encoding="utf-8")
         if manifest.count('../../../modules/document') != 1:
             raise RuntimeError("Unexpected standalone document consumer manifest")
         (consumer / "mcpp.toml").write_text(manifest.replace('../../../modules/document', '../package'), encoding="utf-8")

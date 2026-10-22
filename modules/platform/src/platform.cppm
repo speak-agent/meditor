@@ -41,6 +41,8 @@ public:
 };
 void write_file_atomic(const std::filesystem::path& path, std::string_view data);
 std::filesystem::path executable_directory();
+// Attach a Windows GUI executable to its invoking console, preserving redirected streams.
+void prepare_cli_console();
 std::filesystem::path user_config_directory();
 std::filesystem::path user_cache_directory();
 std::string system_language_tag();

@@ -16,7 +16,7 @@ suffix = ".exe" if os.name == "nt" else ""
 binaries = {}
 for name in (["meditor"] if args.native_tools else ["meditor", "meditor-test-tool"]):
     candidates = list((root / "target").glob(f"**/bin/{name}{suffix}"))
-    candidates = [p for p in candidates if "dist" not in p.parts and "candidates" not in p.parts]
+    candidates = [p for p in candidates if p.is_file() and "dist" not in p.parts and "candidates" not in p.parts]
     if not candidates:
         raise SystemExit(f"Missing built target: {name}")
     binaries[name] = max(candidates, key=lambda p: p.stat().st_mtime)
@@ -30,5 +30,6 @@ for name in ["HuxerUI-LICENSE.txt", "nlohmann-json-LICENSE.txt", "manifest.json"
         raise SystemExit("Native CLI direct dependency notice deployment is missing or changed: " + name)
 command = [sys.executable, str(root / ("scripts/test_native_tools.py" if args.native_tools else "scripts/test_cli.py")), "--binary", str(binaries["meditor"])]
 if not args.native_tools:
+    subprocess.run([sys.executable, str(root / "scripts/test_launch.py"), "--binary", str(binaries["meditor"])], cwd=root, check=True, timeout=180)
     command += ["--fixture", str(binaries["meditor-test-tool"])]
 subprocess.run(command, cwd=root, check=True, timeout=1800 if args.native_tools else 120)

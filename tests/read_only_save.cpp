@@ -28,7 +28,7 @@ int main() {
         meditor::i18n::Localizer messages(language);
         for (const auto viewport : {Size{390, 844}, Size{1200, 800}}) {
             meditor::write_file_atomic(file, "original");
-            std::vector<std::string> arguments {"meditor-gui", "--workspace", root.string(), "--open", "main.cppm", "--settings-file", settings.string(), "--data-root", (root / "runtime").string()};
+            std::vector<std::string> arguments {"meditor", "--workspace", root.string(), "--open", "main.cppm", "--settings-file", settings.string(), "--data-root", (root / "runtime").string()};
             std::vector<char*> pointers; for (auto& arg : arguments) pointers.push_back(arg.data());
             meditor::ui::configure(static_cast<int>(pointers.size()), pointers.data());
             Application application(meditor::ui::workbench, {.show_debug_overlay = false});

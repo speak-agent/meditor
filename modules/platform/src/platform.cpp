@@ -5,6 +5,7 @@ module;
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <cstdio>
 #elif !defined(__EMSCRIPTEN__)
 #include <unistd.h>
 #include <sys/wait.h>
@@ -25,6 +26,17 @@ module meditor.platform;
 import std;
 
 namespace meditor {
+void prepare_cli_console() {
+#if defined(_WIN32)
+    auto missing = [](DWORD stream) { const auto handle = GetStdHandle(stream); return !handle || handle == INVALID_HANDLE_VALUE; };
+    const bool input = missing(STD_INPUT_HANDLE), output = missing(STD_OUTPUT_HANDLE), error = missing(STD_ERROR_HANDLE);
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    FILE* attached {};
+    if (input) freopen_s(&attached, "CONIN$", "r", stdin);
+    if (output) freopen_s(&attached, "CONOUT$", "w", stdout);
+    if (error) freopen_s(&attached, "CONOUT$", "w", stderr);
+#endif
+}
 struct FileLock::Impl {
 #if defined(_WIN32)
     HANDLE file {INVALID_HANDLE_VALUE};

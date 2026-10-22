@@ -1,5 +1,5 @@
 [workspace]
-members = ["modules/document", "modules/platform", "modules/application", "mcpp/distribution", "apps/gui"]
+members = ["modules/document", "modules/platform", "modules/application", "mcpp/distribution"]
 
 [workspace.package]
 mcpp = ">=2026.10.10.1"
@@ -13,18 +13,22 @@ license = "GPL-3.0-only"
 repo = "https://github.com/speak-agent/meditor"
 
 [dependencies]
+meditor-document = { path = "modules/document" }
 meditor-application = { path = "modules/application" }
+huxerui.huxerui = { git = "https://github.com/Sunrisepeak/HuxerUI.git", branch = "meditor" }
 
 [dependencies.nlohmann]
 json = "=3.12.0"
 
 [targets.meditor]
-kind = "bin"
+kind = "app"
 main = "src/main.cpp"
+windows_subsystem = "windows"
 
 [build]
-sources = ["src/*.cpp"]
+sources = []
 macos_deployment_target = "14.0"
+ios_deployment_target = "15.0"
 
 [workspace.toolchain]
 default = "llvm@23.1.3"
@@ -43,15 +47,28 @@ toolchain = "emsdk@6.0.9"
 test-support = []
 
 [feature-deps.test-support]
-meditor-test-fixture = { path = "tests/support" }
+meditor-test-fixture = { path = "mcpp/test-support" }
 
 [targets.meditor-test-tool]
 kind = "bin"
 required_features = ["test-support"]
-main = "tests/support/main.cpp"
+main = "mcpp/test-support/main.cpp"
 
 [build-dependencies]
 meditor-distribution = { path = "mcpp/distribution" }
 
 [target.'cfg(any(os = "macos", os = "ios"))'.dependencies]
 llvm.libcxx = "=22.1.8.3"
+
+[dev-dependencies]
+meditor-test-fixture = { path = "mcpp/test-support" }
+huxerui.huxerui-testing = { git = "https://github.com/Sunrisepeak/HuxerUI.git", branch = "meditor" }
+
+[target.'cfg(os = "emscripten")'.abi]
+exceptions = true
+
+[target.x86_64-linux-android]
+min_api_level = 23
+
+[target.aarch64-linux-android]
+min_api_level = 23

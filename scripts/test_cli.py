@@ -21,7 +21,7 @@ def language_failure_contract(binary, tools, root):
         workspace.mkdir()
         source = workspace / "main.cppm"
         source.write_bytes(b'"' * (9 * 1024 * 1024) if fault == "oversize" else b"original\n")
-        process = subprocess.Popen([str(binary), "serve", "--stdio", "--workspace", str(workspace), "--tool-root", str(tools), "--data-root", str(workspace / "runtime")],
+        process = subprocess.Popen([str(binary), "--cli", "serve", "--stdio", "--workspace", str(workspace), "--tool-root", str(tools), "--data-root", str(workspace / "runtime")],
                                    env={**os.environ, "MEDITOR_FIXTURE_LSP_MODE": fault}, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
         replies = queue.Queue()
         def receive():
@@ -110,7 +110,7 @@ def portable_contract(binary, tools, project, root):
 
     def command(name, params=None, trust=False):
         environment = {**os.environ, "MEDITOR_FIXTURE_ENV_LOG": str(package / "state/receipts")}
-        arguments = [str(executable), name, "--workspace", str(project), "--format", "json", "--params", json.dumps(params or {})]
+        arguments = [str(executable), "--cli", name, "--workspace", str(project), "--format", "json", "--params", json.dumps(params or {})]
         if trust:
             arguments.append("--trust")
         result = subprocess.run(arguments, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=20)
@@ -136,7 +136,7 @@ def portable_contract(binary, tools, project, root):
     assert Path(receipt["MCPP_HOME"]).resolve() == (package / "state/mcpp").resolve()
     assert not previous.exists()
     (package / "portable.json").write_text(json.dumps({"schemaVersion": 1, "dataDirectory": "../escape"}), encoding="utf-8")
-    failed = subprocess.run([str(executable), "doctor", "--workspace", str(project)], capture_output=True, timeout=15)
+    failed = subprocess.run([str(executable), "--cli", "doctor", "--workspace", str(project)], capture_output=True, timeout=15)
     assert failed.returncode != 0 and not (root / "escape").exists()
 
 
@@ -144,7 +144,7 @@ def localization_contract(binary, project, settings_file):
     common = ["--workspace", str(project), "--settings-file", str(settings_file)]
 
     def invoke(*arguments, language=None, json_output=False, environment=None):
-        command = [str(binary), *arguments, *common]
+        command = [str(binary), "--cli", *arguments, *common]
         if language:
             command += ["--language", language]
         if json_output:
@@ -208,7 +208,7 @@ def main():
         data_root = root / "runtime data"
         receipts = root / "environment-receipts"
         child_environment = {**os.environ, "MEDITOR_FIXTURE_ENV_LOG": str(receipts)}
-        process = subprocess.Popen([str(binary), "serve", "--stdio", "--workspace", str(project), "--tool-root", str(tools), "--settings-file", str(settings_file), "--data-root", str(data_root)], env=child_environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        process = subprocess.Popen([str(binary), "--cli", "serve", "--stdio", "--workspace", str(project), "--tool-root", str(tools), "--settings-file", str(settings_file), "--data-root", str(data_root)], env=child_environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
         sequence = 0
         def request(command, params=None, *, ok=True):
             nonlocal sequence
@@ -245,17 +245,17 @@ def main():
             assert request("settings.update", {"revision": -1, "changes": {}}, ok=False)["code"] == "invalid-params"
             assert request("settings.update", {"revision": 1, "changes": {"theme": "unknown"}}, ok=False)["code"] == "invalid-settings"
             assert request("settings.update", {"revision": 1, "changes": {"unknown": True}}, ok=False)["code"] == "invalid-settings"
-            other = subprocess.run([str(binary), "settings.update", "--workspace", str(project), "--settings-file", str(settings_file), "--format", "json", "--params", json.dumps({"revision": 1, "changes": {"reducedMotion": True}})], capture_output=True, text=True, encoding="utf-8", timeout=15)
+            other = subprocess.run([str(binary), "--cli", "settings.update", "--workspace", str(project), "--settings-file", str(settings_file), "--format", "json", "--params", json.dumps({"revision": 1, "changes": {"reducedMotion": True}})], capture_output=True, text=True, encoding="utf-8", timeout=15)
             assert other.returncode == 0 and json.loads(other.stdout)["data"]["revision"] == 2
             assert request("settings.get")["values"] == {"theme": "light", "reducedMotion": True, "language": "auto"}
-            racers = [subprocess.Popen([str(binary), "settings.update", "--workspace", str(project), "--settings-file", str(settings_file), "--format", "json", "--params", json.dumps({"revision": 2, "changes": changes})], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+            racers = [subprocess.Popen([str(binary), "--cli", "settings.update", "--workspace", str(project), "--settings-file", str(settings_file), "--format", "json", "--params", json.dumps({"revision": 2, "changes": changes})], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
                       for changes in [{"theme": "dark"}, {"reducedMotion": False}]]
             race_replies = [json.loads(racer.communicate(timeout=15)[0]) for racer in racers]
             assert sum(reply["ok"] for reply in race_replies) == 1
             assert request("settings.get")["revision"] == 3
             user_config = root / "配置 preferences"
             environment = {**os.environ, "APPDATA": str(user_config), "XDG_CONFIG_HOME": str(user_config), "HOME": str(user_config)}
-            default_result = subprocess.run([str(binary), "settings.update", "--workspace", str(project), "--format", "json", "--params", json.dumps({"revision": 0, "changes": {"theme": "light"}})], env=environment, capture_output=True, text=True, encoding="utf-8", timeout=15)
+            default_result = subprocess.run([str(binary), "--cli", "settings.update", "--workspace", str(project), "--format", "json", "--params", json.dumps({"revision": 0, "changes": {"theme": "light"}})], env=environment, capture_output=True, text=True, encoding="utf-8", timeout=15)
             assert default_result.returncode == 0 and json.loads(default_result.stdout)["data"]["revision"] == 1
             default_file = (user_config / "Library/Application Support" if sys.platform == "darwin" else user_config) / "meditor/settings.json"
             assert json.loads(default_file.read_text(encoding="utf-8"))["values"]["theme"] == "light"
@@ -401,7 +401,7 @@ def main():
             process.wait(timeout=20)
             errors = process.stderr.read()
             assert process.returncode == 0 and not errors
-        once = subprocess.run([str(binary), "doctor", "--workspace", str(project), "--tool-root", str(tools), "--format", "json"], capture_output=True, text=True, timeout=20)
+        once = subprocess.run([str(binary), "--cli", "doctor", "--workspace", str(project), "--tool-root", str(tools), "--format", "json"], capture_output=True, text=True, timeout=20)
         assert once.returncode == 0 and json.loads(once.stdout)["ok"]
         assert str(root) not in once.stdout
         language_failure_contract(binary, tools, root)

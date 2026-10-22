@@ -14,7 +14,7 @@ class Session:
         workspace.mkdir()
         self.source = workspace / "main.cppm"
         self.source.write_bytes(b"original\n")
-        self.process = subprocess.Popen([str(binary), "serve", "--stdio", "--workspace", str(workspace), "--tool-root", str(tools), "--data-root", str(workspace / "runtime")],
+        self.process = subprocess.Popen([str(binary), "--cli", "serve", "--stdio", "--workspace", str(workspace), "--tool-root", str(tools), "--data-root", str(workspace / "runtime")],
                                         env={**os.environ, "MEDITOR_FIXTURE_LSP_MODE": fault}, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
         self.replies = queue.Queue()
         self.sequence = 0

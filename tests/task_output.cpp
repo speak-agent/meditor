@@ -16,7 +16,7 @@ public:
 #if defined(__APPLE__)
         const auto root = meditor::executable_directory() / "HuxerUI";
 #else
-        const auto root = meditor::executable_directory() / "meditor-gui.resources";
+        const auto root = meditor::executable_directory() / "meditor.resources";
 #endif
         auto result = huxerui::File(std::u8string_view((root / std::filesystem::path(packagePath)).u8string())).OpenRead();
         if (result.Succeeded()) return std::move(result).Value();
@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
     meditor::write_file_atomic(project / "main.cppm", source);
     meditor::write_file_atomic(project / ".meditor-fixture-lsp-mode", "gui-symbols");
     meditor::write_file_atomic(project / ".meditor-fixture-task-mode", "stream");
-    std::vector<std::string> arguments {"meditor-gui", "--workspace", project.string(), "--open", "main.cppm", "--tool-root", tools.string(), "--settings-file", settings.string(), "--data-root", (root / "runtime").string()};
+    std::vector<std::string> arguments {"meditor", "--workspace", project.string(), "--open", "main.cppm", "--tool-root", tools.string(), "--settings-file", settings.string(), "--data-root", (root / "runtime").string()};
     std::vector<char*> pointers; for (auto& argument : arguments) pointers.push_back(argument.data());
     meditor::ui::configure(static_cast<int>(pointers.size()), pointers.data());
     struct Case { std::string language; bool dark, reduced; Size viewport; };

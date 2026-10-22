@@ -2,9 +2,10 @@
 // Copyright (C) 2026 Sunrisepeak & mcpp-community
 import std;
 import mcpp;
+import huxerui.rules;
 import meditor.distribution;
 
-int main() {
+int deploy_tools() {
     try {
         const auto root = std::filesystem::path(mcpp::manifest_dir());
         mcpp::deploy((root / "LICENSE").string().c_str(), "licenses/meditor");
@@ -39,4 +40,15 @@ int main() {
         mcpp::deploy(stamp.string().c_str(), "tools");
         return 0;
     } catch (const std::exception& error) { std::println(std::cerr, "meditor delivery: {}", error.what()); return 1; }
+}
+
+int main() {
+    if (!huxerui::rules::configure({
+        .target = "meditor",
+        .sources = {"src/app.cppm", "src/app.cpp", "src/cli.cppm", "src/cli.cpp", "src/launch.cppm", "src/launch.cpp", "src/ui/workbench.cppm", "src/ui/workbench.cpp", "src/ui/editor.cppm", "src/ui/editor.cpp", "src/ui/theme.cppm", "src/ui/theme.cpp", "src/shortcuts.cppm", "src/shortcuts.cpp"},
+        .bundle_name = "meditor",
+        .bundle_identifier = "org.speakagent.meditor",
+        .installer = {.target = "meditor", .version = "0.0.1", .upgrade_code = "81092ED7-605E-4435-B6A3-4DD04682CE21"},
+    })) return 1;
+    return deploy_tools();
 }

@@ -44,11 +44,12 @@ def main():
     parser.add_argument("--bom", action="store_true")
     parser.add_argument("--crlf", action="store_true")
     parser.add_argument("--readonly", action="store_true")
+    parser.add_argument("--positional", action="store_true")
     args = parser.parse_args()
     if args.binary:
         binary = args.binary.resolve()
     else:
-        candidates = [p for p in Path("target").glob("**/bin/meditor-gui/meditor-gui") if p.is_file() and "dist" not in p.parts and "candidates" not in p.parts]
+        candidates = [p for p in Path("target").glob("**/bin/meditor") if p.is_file() and "dist" not in p.parts and "candidates" not in p.parts]
         if not candidates:
             raise SystemExit("Missing native GUI target")
         binary = max(candidates, key=lambda p: p.stat().st_mtime).resolve()
@@ -99,7 +100,7 @@ def main():
     display = x.XOpenDisplay(None)
     if not display:
         raise SystemExit("An X11 display is required")
-    with tempfile.TemporaryDirectory(prefix="meditor-gui-test-") as folder:
+    with tempfile.TemporaryDirectory(prefix="meditor-test-") as folder:
         root = Path(folder)
         samples = {
             "cpp": ("main.cppm", "export module demo;\nexport int value() { return 42; }\n"),
@@ -117,7 +118,8 @@ def main():
         source.write_bytes(original.encode())
         (root / "settings.json").write_text(json.dumps({"schemaVersion": 1, "revision": 1, "values": {"theme": args.theme, "reducedMotion": False, "language": args.language}}), encoding="utf-8")
         environment = os.environ.copy(); environment.update(GDK_BACKEND="x11", GSK_RENDERER="cairo")
-        process = subprocess.Popen([str(binary), "--workspace", str(root), "--open", filename, "--settings-file", str(root / "settings.json"), "--data-root", str(root / "runtime")], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        opening = [str(source)] if args.positional else ["--workspace", str(root), "--open", filename]
+        process = subprocess.Popen([str(binary), *opening, "--settings-file", str(root / "settings.json"), "--data-root", str(root / "runtime")], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         window = None
         pressed = set()
         try:

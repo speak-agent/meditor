@@ -36,7 +36,7 @@ sources = ["src/*.cpp", "src/*.cppm"]
         (root / "src/core.cppm").write_text('export module sample.core;\nexport int answer();\n', encoding="utf-8")
         (root / "src/core.cpp").write_text('module sample.core;\nint answer() { return 42; }\n', encoding="utf-8")
         (root / "tests/core.cpp").write_text('import sample.core;\nint main() { return answer() == 42 ? 0 : 1; }\n', encoding="utf-8")
-        process = subprocess.Popen([str(binary), "serve", "--stdio", "--workspace", str(root), "--trust", *extra], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        process = subprocess.Popen([str(binary), "--cli", "serve", "--stdio", "--workspace", str(root), "--trust", *extra], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
         sequence = 0
 
         def request(command, params=None):

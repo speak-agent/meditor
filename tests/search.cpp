@@ -16,7 +16,7 @@ int main() {
     struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup {root};
     const std::string original = "\xef\xbb\xbf" "export module demo;\r\n// needle 🙂 needle\r\nexport int needle = 42;\r\n";
     const std::string expected = "\xef\xbb\xbf" "export module demo;\r\n// 结果 🙂 结果\r\nexport int 结果 = 42;\r\n";
-    std::vector<std::string> arguments {"meditor-gui", "--workspace", root.string(), "--open", "main.cppm", "--settings-file", (root / "settings.json").string(), "--data-root", (root / "runtime").string()};
+    std::vector<std::string> arguments {"meditor", "--workspace", root.string(), "--open", "main.cppm", "--settings-file", (root / "settings.json").string(), "--data-root", (root / "runtime").string()};
     std::vector<char*> pointers; for (auto& argument : arguments) pointers.push_back(argument.data());
     meditor::ui::configure(static_cast<int>(pointers.size()), pointers.data());
     for (auto viewport : {Size{390, 844}, Size{800, 600}, Size{1200, 800}}) for (auto language : {"en", "zh"}) {

@@ -30,7 +30,7 @@ int main() {
     std::filesystem::create_directories(first); std::filesystem::create_directories(destination);
     { std::ofstream file(first / "main.cppm"); file << "original"; }
     { std::ofstream file(destination / std::filesystem::u8path("模块.cppm")); file << "second"; }
-    std::vector<std::string> arguments {"meditor-gui", "--workspace", first.string(), "--open", "main.cppm", "--data-root", (directory / "runtime").string()};
+    std::vector<std::string> arguments {"meditor", "--workspace", first.string(), "--open", "main.cppm", "--data-root", (directory / "runtime").string()};
     std::vector<char*> pointers; for (auto& arg : arguments) pointers.push_back(arg.data());
     meditor::ui::configure(static_cast<int>(pointers.size()), pointers.data());
     Application application(root, {.show_debug_overlay = false});
