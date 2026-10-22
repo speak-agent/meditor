@@ -317,6 +317,15 @@ std::string path_to_utf8(const std::filesystem::path& path) {
     const auto value = path.generic_u8string();
     return {reinterpret_cast<const char*>(value.data()), value.size()};
 }
+bool same_path_spelling(const std::filesystem::path& left, const std::filesystem::path& right) {
+    const auto a = left.lexically_normal(), b = right.lexically_normal();
+#if defined(_WIN32)
+    if (a.native().size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) || b.native().size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return false;
+    return CompareStringOrdinal(a.c_str(), static_cast<int>(a.native().size()), b.c_str(), static_cast<int>(b.native().size()), TRUE) == CSTR_EQUAL;
+#else
+    return a == b;
+#endif
+}
 std::string read_file(const std::filesystem::path& path, std::size_t limit) {
     std::ifstream input(path, std::ios::binary); if (!input) throw std::runtime_error("Could not open the file");
     std::string result; std::array<char, 16384> buffer;

@@ -97,6 +97,25 @@ sources = ["src/*.cpp", "src/*.cppm"]
                 symbols = request("language.symbols", {"document": document})
                 assert isinstance(symbols, list)
             assert navigable_answer(symbols), "Native language service did not return navigable hierarchical function symbols"
+            for operation in ["definition", "references"]:
+                deadline = time.monotonic() + 60
+                while True:
+                    query = request("language.query", {"document": document, "revision": 1, "operation": operation, "position": {"line": 1, "character": 13}, "timeoutMs": 30000})["query"]
+                    while True:
+                        locations = request("language.result", {"query": query})
+                        if locations["state"] != "running":
+                            break
+                        assert time.monotonic() < deadline, "Native navigation query exceeded its deadline"
+                        time.sleep(.05)
+                    assert locations["state"] == "succeeded", (operation, locations.get("error"))
+                    available = [i for i, item in enumerate(locations["locations"]) if item["available"]]
+                    if available or time.monotonic() >= deadline:
+                        break
+                    time.sleep(.1)
+                assert available, "Native language service returned no navigable workspace " + operation
+                navigated = request("language.navigate", {"query": query, "location": available[0]})
+                assert "answer" in request("document.read", {"document": navigated["target"]["document"]})["text"]
+                assert not request("language.result", {"query": query, "includeResult": False})["stale"]
             graph = request("modules.graph", {"document": document})
             assert isinstance(graph, dict)
             assert "sample.core" in json.dumps(graph)

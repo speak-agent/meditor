@@ -120,7 +120,9 @@ std::size_t utf8_offset_at(std::string_view value, Position position) {
     throw std::runtime_error("Invalid UTF-16 document position");
 }
 Position Document::position_at(std::size_t offset) const {
-    const auto value = text();
+    return utf8_position_at(text(), offset);
+}
+Position utf8_position_at(std::string_view value, std::size_t offset) {
     if (!boundary(value, offset)) throw std::runtime_error("Invalid UTF-8 byte boundary");
     Position result;
     for (std::size_t i = 0; i < offset;) {

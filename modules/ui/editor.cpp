@@ -68,6 +68,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     std::vector<TextRange> searchMatches;
     bool revealCaret {true};
     ViewNode* focusNode {};
+    bool focusWhenMounted {};
     void rebuild_() {
         auto oldLines = std::move(lines);
         auto oldPositions = std::move(positions);
@@ -356,6 +357,7 @@ public:
         return PointerResult::Ignored;
     }
     PaintInvalidation PrepareGeometry(ViewNode& node, TextMeasurer& measurer) override {
+        if (model_->focusWhenMounted) { model_->focusWhenMounted = false; node.RequestFocus(); }
         auto& model = *model_; model.viewport = node.LayoutSize();
         TextStyle style {.font = Font::Monospace(14), .foreground = Color::Rgb(218, 224, 235)};
         auto metrics = measurer.Metrics(style.font); model.ascent = metrics.ascent; model.lineHeight = std::max(22.0F, metrics.LineHeight() + 3);
@@ -466,6 +468,13 @@ bool EditorState::select_lsp_range(Position start, Position end, std::uint64_t r
     } catch (...) { return false; }
 }
 bool EditorState::request_focus() { return impl_->focusNode && impl_->focusNode->RequestFocus(); }
+void EditorState::focus_when_mounted() {
+    if (impl_->focusNode) { impl_->focusNode->RequestFocus(); return; }
+    impl_->focusWhenMounted = true; if (impl_->changed) impl_->changed();
+}
+Position EditorState::lsp_position() const {
+    return utf8_position_at(impl_->presentation.raw_text(), impl_->presentation.raw_offset(byte_at(impl_->value.text, impl_->value.selection.active)));
+}
 bool EditorState::set_search_results(std::vector<TextRange> matches, std::uint64_t revision) {
     if (revision != impl_->documentRevision) return false;
     TextOffset end {};

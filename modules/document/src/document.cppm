@@ -50,6 +50,7 @@ struct Position {
 };
 // UTF-16 coordinates in the supplied UTF-8 text, including any BOM and CR.
 std::size_t utf8_offset_at(std::string_view text, Position position);
+Position utf8_position_at(std::string_view text, std::size_t byte);
 struct Edit {
     std::size_t start {};
     std::size_t end {};

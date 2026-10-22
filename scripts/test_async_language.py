@@ -58,7 +58,54 @@ class Session:
             time.sleep(.02)
 
 
+def navigation_contract(binary, tools, root):
+    session = Session(binary, tools, root / "async-navigation", "nav-locations")
+    try:
+        target = session.source.parent / "target.cppm"
+        original = b"target original\n"
+        target.write_bytes(original)
+        source = session.call("document.open", {"path": "main.cppm"})["document"]
+        session.call("workspace.trust", {"allow": True})
+        params = {"document": source, "revision": 1, "operation": "definition", "position": {"line": 0, "character": 0}}
+        query = session.call("language.query", params)["query"]
+        result = session.finish(query)
+        assert result["state"] == "succeeded" and result["locations"][0]["available"]
+        assert result["locations"][0]["path"] == "target.cppm" and "target original" not in json.dumps(result)
+        status = session.call("language.result", {"query": query, "includeResult": False})
+        assert status["state"] == "succeeded" and "result" not in status and "locations" not in status
+        assert session.call("language.navigate", {"query": query, "location": -1}, ok=False)["code"] == "invalid-params"
+        stamp = target.stat()
+        target.write_bytes(b"TARGET original\n")
+        os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        assert session.call("language.navigate", {"query": query, "location": 0}, ok=False)["code"] == "revision-conflict"
+        assert len(session.call("workspace.status")["documents"]) == 1
+        target.write_bytes(original)
+        opened = session.call("language.navigate", {"query": query, "location": 0})
+        document = opened["target"]["document"]
+        assert opened["opened"] and document != source and not opened["target"]["dirty"]
+        assert not session.call("language.result", {"query": query, "includeResult": False})["stale"]
+        assert not session.call("language.navigate", {"query": query, "location": 0})["opened"]
+        session.call("document.edit", {"document": document, "revision": 1, "edits": [{"start": 0, "end": 0, "text": "!"}]})
+        assert session.call("language.navigate", {"query": query, "location": 0}, ok=False)["code"] == "revision-conflict"
+        query = session.call("language.query", {**params, "operation": "references"})["query"]
+        result = session.finish(query)
+        assert result["state"] == "succeeded" and len(result["locations"]) == 3
+        assert not result["locations"][2]["available"] and "path" not in result["locations"][2]
+        assert session.call("language.navigate", {"query": query, "location": 0})["target"]["dirty"]
+        assert session.call("language.navigate", {"query": query, "location": 1})["target"]["document"] == source
+        assert session.call("language.navigate", {"query": query, "location": 2}, ok=False)["code"] == "capability-unavailable"
+        assert session.call("document.read", {"document": document})["text"] == "!target original\n"
+        assert target.read_bytes() == original and session.source.read_bytes() == b"original\n"
+        assert session.call("language.release", {"query": query})["released"]
+        assert session.call("language.navigate", {"query": query, "location": 0}, ok=False)["code"] == "not-found"
+        session.call("language.stop")
+    finally:
+        session.close()
+    print("Language navigation captures exact targets, rejects changed files and preserves unsaved buffers: passed")
+
+
 def exercise(binary, tools, root):
+    navigation_contract(binary, tools, root)
     session = Session(binary, tools, root / "async-startup", "slow-initialize")
     try:
         doc = session.call("document.open", {"path": "main.cppm"})["document"]
@@ -69,6 +116,7 @@ def exercise(binary, tools, root):
         assert session.call("language.query", {**params, "position": {"line": 100, "character": 0}}, ok=False)["code"] == "invalid-params"
         start = time.monotonic()
         query = session.call("language.query", params)["query"]
+        assert session.call("language.release", {"query": query}, ok=False)["code"] == "language-busy"
         session.call("document.edit", {"document": doc, "revision": 1, "edits": [{"start": 0, "end": 9, "text": "saved while starting\n"}]})
         assert not session.call("document.save", {"document": doc, "revision": 2})["dirty"]
         assert session.source.read_bytes() == b"saved while starting\n"

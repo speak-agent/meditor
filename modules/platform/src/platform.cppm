@@ -32,6 +32,8 @@ public:
     void terminate();
 };
 std::string path_to_utf8(const std::filesystem::path& path);
+// Windows ordinal case folding, exact spelling elsewhere; aliases also need filesystem identity checks.
+bool same_path_spelling(const std::filesystem::path& left, const std::filesystem::path& right);
 std::string read_file(const std::filesystem::path& path, std::size_t limit = 32 * 1024 * 1024);
 class FileReadOnlyError : public std::runtime_error {
 public:

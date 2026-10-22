@@ -21,6 +21,8 @@ struct LanguageRow {
     Position start, end;
     bool navigable {};
     int severity {};
+    std::optional<std::size_t> location;
+    std::string stateKey;
 };
 std::string language_label(std::string text, std::size_t limit = 2048) {
     if (text.size() > limit) {
@@ -78,19 +80,28 @@ struct WorkspaceModel {
     std::optional<std::size_t> searchReplaced;
     std::size_t searchTotal {};
     bool searchWrapped {};
-    std::string languageOperation, languageQuery, languageDocument, languageState {"language.empty"};
+    std::string languageOperation, languageQuery, languageResultQuery, languageDocument, languageState {"language.empty"};
     std::uint64_t languageRevision {}, languageSequence {};
     bool languageVerified {}, languageTruncated {};
     std::vector<LanguageRow> languageRows;
     void cancel_language() {
         if (application && !languageQuery.empty()) application->execute({{"command", "language.cancel"}, {"params", {{"query", languageQuery}}}});
-        languageQuery.clear(); ++languageSequence;
+        if (application && !languageResultQuery.empty()) application->execute({{"command", "language.release"}, {"params", {{"query", languageResultQuery}}}});
+        languageQuery.clear(); languageResultQuery.clear(); ++languageSequence;
     }
     void close_language() { cancel_language(); languageOperation.clear(); languageRows.clear(); }
+    bool language_navigation() const { return languageOperation == "definition" || languageOperation == "references"; }
     bool language_current() const {
+        if (!languageResultQuery.empty()) {
+            const auto status = application->execute({{"command", "language.result"}, {"params", {{"query", languageResultQuery}, {"includeResult", false}}}});
+            if (!status.value("ok", false) || status["data"].value("stale", true)) return false;
+            if (language_navigation()) return true;
+        }
         return active == languageDocument && editors.contains(active) && editors.at(active)->revision() == languageRevision;
     }
-    void adopt_language_result(const Json& result) {
+    void adopt_language_result(const Json& status) {
+        const auto& result = status.at("result");
+        languageResultQuery = status.at("query").get<std::string>();
         languageRows.clear(); languageTruncated = false; languageVerified = languageOperation != "diagnostics";
         auto add = [&](const Json& value, std::string label, bool navigate, int severity = 0) {
             LanguageRow row; row.label = language_label(std::move(label));
@@ -98,7 +109,18 @@ struct WorkspaceModel {
             row.navigable = language_range(value, row) && navigate;
             languageRows.push_back(std::move(row));
         };
-        if (languageOperation == "diagnostics") {
+        if (language_navigation()) {
+            languageTruncated = status.value("locationsTruncated", false);
+            for (const auto& location : status.at("locations")) {
+                LanguageRow row; row.label = language_label(location.value("path", "")); row.location = languageRows.size();
+                row.navigable = location.value("available", false) && language_range(location.value("range", Json::object()), row);
+                if (!row.navigable) {
+                    const auto reason = location.value("reason", "");
+                    row.stateKey = reason == "outside-workspace" ? "language.externalLocation" : reason == "navigation-limit" ? "language.navigationLimited" : "language.unavailableLocation";
+                }
+                languageRows.push_back(std::move(row));
+            }
+        } else if (languageOperation == "diagnostics") {
             languageVerified = result.at("versionVerified").get<bool>();
             for (const auto& publication : result.at("diagnostics")) for (const auto& item : publication.at("diagnostics")) {
                 if (languageRows.size() == 200) { languageTruncated = true; break; }
@@ -350,7 +372,9 @@ View workbench(WorkspaceServices services) {
             data->languageDocument = data->active; data->languageRevision = editor->revision();
             data->languageRows.clear(); data->languageVerified = false; data->languageTruncated = false;
             if (compact) data->navigation = false;
-            auto reply = data->application->execute({{"command", "language.query"}, {"params", {{"document", data->active}, {"revision", editor->revision()}, {"operation", data->languageOperation}}}});
+            Json params {{"document", data->active}, {"revision", editor->revision()}, {"operation", data->languageOperation}};
+            if (data->language_navigation()) { const auto position = editor->lsp_position(); params["position"] = {{"line", position.line}, {"character", position.character}}; }
+            auto reply = data->application->execute({{"command", "language.query"}, {"params", std::move(params)}});
             if (!reply.value("ok", false)) {
                 const auto key = "error." + reply["error"].value("code", "operation-failed");
                 data->languageState = data->messages.contains(key) ? key : "error.operation-failed"; refresh(); return;
@@ -374,7 +398,7 @@ View workbench(WorkspaceServices services) {
                         const auto key = "error." + result["error"].value("code", "operation-failed");
                         data->languageState = data->messages.contains(key) ? key : "error.operation-failed";
                     } else {
-                        try { data->adopt_language_result(result.at("result")); }
+                        try { data->adopt_language_result(result); }
                         catch (const std::exception&) { data->languageRows.clear(); data->languageState = "language.invalidResult"; }
                     }
                     refresh(); co_return;
@@ -461,6 +485,8 @@ View workbench(WorkspaceServices services) {
                 Button(t("action.find")).Key("action-find").With(Enabled(!data->active.empty())).OnClick(openSearch),
                 Button(t("language.problems")).Key("action-problems").With(Enabled(!data->active.empty() && data->editors.at(data->active)->language_id() == "cpp")).OnClick([queryLanguage] { queryLanguage("diagnostics"); }),
                 Button(t("language.outline")).Key("action-outline").With(Enabled(!data->active.empty() && data->editors.at(data->active)->language_id() == "cpp")).OnClick([queryLanguage] { queryLanguage("symbols"); }),
+                Button(t("language.definition")).Key("action-definition").With(Enabled(!data->active.empty() && data->editors.at(data->active)->language_id() == "cpp")).OnClick([queryLanguage] { queryLanguage("definition"); }),
+                Button(t("language.references")).Key("action-references").With(Enabled(!data->active.empty() && data->editors.at(data->active)->language_id() == "cpp")).OnClick([queryLanguage] { queryLanguage("references"); }),
                 Button(t("action.undo")).Key("action-undo").OnClick([data] { if (!data->active.empty()) data->editors.at(data->active)->undo(); }),
                 Button(t("action.redo")).Key("action-redo").OnClick([data] { if (!data->active.empty()) data->editors.at(data->active)->redo(); }),
                 Button(t("action.build")).Key("action-build").With(Enabled(!data->busy)).OnClick([executeTask] { executeTask("build"); }),
@@ -476,22 +502,41 @@ View workbench(WorkspaceServices services) {
                 std::vector<std::size_t> rows(data->languageRows.size()); std::iota(rows.begin(), rows.end(), 0);
                 languagePanel = Column {
                     Flow {
-                        Text(t(data->languageOperation == "diagnostics" ? "language.problems" : "language.outline"), TextRole::Title),
+                        Text(t(data->languageOperation == "diagnostics" ? "language.problems" : data->languageOperation == "symbols" ? "language.outline" : data->languageOperation == "definition" ? "language.definition" : "language.references"), TextRole::Title),
                         Button(t("language.refresh")).Key("language-refresh").With(Enabled(data->languageQuery.empty() && !data->active.empty() && data->editors.at(data->active)->language_id() == "cpp")).OnClick([data, queryLanguage] { queryLanguage(data->languageOperation); }),
                         Button(t("language.cancel")).Key("language-cancel").With(Enabled(!data->languageQuery.empty())).OnClick([data, refresh] { data->cancel_language(); data->languageRows.clear(); data->languageState = "language.cancelled"; refresh(); }),
                         Button(t("language.close")).Key("language-close").OnClick([data, refresh] { data->close_language(); if (!data->active.empty()) data->editors.at(data->active)->request_focus(); refresh(); }),
                     }.With(Spacing(8)),
                     Text(t(state), TextRole::Label).Key("language-state"),
                     current && data->languageOperation == "diagnostics" && (state == "language.ready" || state == "language.empty") && !data->languageVerified ? View(Text(t("language.unverified"), TextRole::Label).Key("language-unverified")) : View{},
-                    data->languageTruncated ? View(Text(t("language.truncated"), TextRole::Label).Key("language-truncated")) : View{},
+                    data->languageTruncated ? View(Text(t(data->language_navigation() ? "language.navigationLimited" : "language.truncated"), TextRole::Label).Key("language-truncated")) : View{},
                     ScrollView {Column {ForEach(rows, [data, current, t, refresh](std::size_t index) {
                         const auto row = data->languageRows.at(index);
                         const auto position = data->messages.text("language.position", {{"line", std::to_string(row.start.line + 1)}, {"column", std::to_string(row.start.character + 1)}});
                         const std::array severityNames {t("language.severity.1"), t("language.severity.2"), t("language.severity.3"), t("language.severity.4")};
                         const auto severity = row.severity >= 1 && row.severity <= 4 ? severityNames[row.severity - 1] + ": " : "";
-                        return Button(severity + row.label + (row.navigable ? " · " + position : "")).Key("language-row-" + std::to_string(index))
+                        const auto label = row.label + (row.stateKey.empty() ? "" : (row.label.empty() ? "" : " · ") + t(row.stateKey));
+                        return Button(severity + label + (row.navigable ? " · " + position : "")).Key("language-row-" + std::to_string(index))
                             .With(Enabled(current && row.navigable)).OnClick([data, row, refresh] {
                                 if (!data->language_current()) { data->languageState = "language.stale"; refresh(); return; }
+                                if (row.location) {
+                                    const auto reply = data->application->execute({{"command", "language.navigate"}, {"params", {{"query", data->languageResultQuery}, {"location", *row.location}}}});
+                                    if (!reply.value("ok", false)) {
+                                        const auto code = reply["error"].value("code", "operation-failed");
+                                        if (code == "revision-conflict") { data->languageRows.clear(); data->languageState = "language.stale"; }
+                                        else { const auto key = "error." + code; data->languageState = data->messages.contains(key) ? key : "error.operation-failed"; }
+                                        refresh(); return;
+                                    }
+                                    const auto& target = reply["data"]["target"]; const auto id = target["document"].get<std::string>();
+                                    if (!data->editors.contains(id)) { data->editors[id] = std::make_shared<EditorState>(data->application, id, refresh); data->tabs.push_back(id); }
+                                    data->active = id;
+                                    const auto& range = reply["data"]["range"];
+                                    const Position start {range["start"]["line"].get<std::size_t>(), range["start"]["character"].get<std::size_t>()}, end {range["end"]["line"].get<std::size_t>(), range["end"]["character"].get<std::size_t>()};
+                                    auto editor = data->editors.at(id);
+                                    if (!editor->select_lsp_range(start, end, target["revision"].get<std::uint64_t>())) data->languageState = "language.invalidPosition";
+                                    else editor->focus_when_mounted();
+                                    refresh(); return;
+                                }
                                 auto editor = data->editors.at(data->active);
                                 if (!editor->select_lsp_range(row.start, row.end, data->languageRevision)) data->languageState = "language.invalidPosition";
                                 else if (!editor->request_focus()) data->languageState = "language.focusUnavailable";
@@ -607,6 +652,7 @@ View workbench(WorkspaceServices services) {
                     data->close_language(); if (!data->active.empty()) data->editors.at(data->active)->request_focus(); refresh(); return true;
                 }
                 if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.modifiers.shift && (event.key == Key::O || event.key == Key::M)) { queryLanguage(event.key == Key::O ? "symbols" : "diagnostics"); return true; }
+                if (event.type == KeyEventType::Down && event.key == Key::F12) { queryLanguage(event.modifiers.shift ? "references" : "definition"); return true; }
                 if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::F) { openSearch(); return true; }
                 if (event.type == KeyEventType::Down && (event.modifiers.control || event.modifiers.meta) && event.key == Key::S) { save(); return true; } return false;
             });

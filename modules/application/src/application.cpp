@@ -6,6 +6,7 @@ import nlohmann.json;
 import meditor.document;
 import meditor.syntax;
 import meditor.platform;
+import meditor.language.locations;
 import meditor.settings;
 import meditor.about;
 
@@ -233,7 +234,7 @@ struct LanguageStartup {
         return client;
     }
 };
-struct LanguageSnapshot { std::string uri, text; std::uint64_t revision {}; int version {}; };
+struct LanguageSnapshot { std::string path, uri, text; std::uint64_t revision {}; int version {}; };
 struct QueryBudget { std::atomic<std::size_t> outputBytes {}; };
 struct LanguageQuery {
     std::mutex mutex;
@@ -241,6 +242,7 @@ struct LanguageQuery {
     std::uint64_t revision {}, generation {}, sequence {};
     std::map<std::string, std::uint64_t> context;
     Json result, error;
+    language::NavigationSet navigation;
     std::size_t inputBytes {}, outputBytes {};
     std::shared_ptr<QueryBudget> budget;
     std::jthread worker;
@@ -361,13 +363,44 @@ struct Application::Impl {
         std::lock_guard lock(startup->mutex);
         return {{"state", startup->finished ? "failed" : "starting"}, {"error", startup->error}};
     }
-    Json query_status(const std::string& id) {
-        if (!queries.contains(id)) throw CommandError("not-found", "Language query does not exist");
-        auto& query = *queries.at(id); std::lock_guard lock(query.mutex);
+    bool query_stale(const LanguageQuery& query) const {
         bool stale = query.generation != workspaceGeneration || query.context.size() != documents.size();
         for (const auto& [document, revision] : query.context) if (!documents.contains(document) || documents.at(document)->document.revision() != revision) stale = true;
-        return {{"query", id}, {"state", query.state}, {"operation", query.operation}, {"document", query.document}, {"revision", query.revision}, {"generation", query.generation}, {"stale", stale},
-            {"cancellationRequested", query.worker.get_stop_token().stop_requested()}, {"result", query.result}, {"error", query.error}};
+        return stale;
+    }
+    Json query_status(const std::string& id, bool includeResult = true) {
+        if (!queries.contains(id)) throw CommandError("not-found", "Language query does not exist");
+        auto& query = *queries.at(id); std::lock_guard lock(query.mutex);
+        const bool stale = query_stale(query);
+        Json result {{"query", id}, {"state", query.state}, {"operation", query.operation}, {"document", query.document}, {"revision", query.revision}, {"generation", query.generation}, {"stale", stale},
+            {"cancellationRequested", query.worker.get_stop_token().stop_requested()}, {"error", query.error}};
+        if (includeResult) { result["result"] = query.result; result["locations"] = query.navigation.locations; result["locationsTruncated"] = query.navigation.truncated; }
+        return result;
+    }
+    Json navigate(const Json& params) {
+        const auto id = params.at("query").get<std::string>();
+        if (!queries.contains(id)) throw CommandError("not-found", "Language query does not exist");
+        auto& query = *queries.at(id); std::lock_guard lock(query.mutex);
+        if (query.state != "succeeded" || query_stale(query)) throw CommandError("revision-conflict", "Language locations are out of date");
+        const auto index = params.at("location").get<std::int64_t>();
+        if (index < 0 || static_cast<std::uint64_t>(index) >= query.navigation.locations.size()) throw CommandError("invalid-params", "Unknown language location");
+        const auto& location = query.navigation.locations.at(static_cast<std::size_t>(index));
+        if (!location.value("available", false)) throw CommandError("capability-unavailable", "This language location is unavailable");
+        const auto path = location.at("path").get<std::string>();
+        const auto resolved = resolve(path);
+        if (path_to_utf8(resolved.lexically_relative(root)) != path) throw CommandError("revision-conflict", "Location target changed");
+        const auto& captured = query.navigation.texts.at(path);
+        for (const auto& [document, record] : documents) if (record->path == path) {
+            if (record->document.text() != captured) throw CommandError("revision-conflict", "Location target changed");
+            return {{"target", summary(document, *record)}, {"range", location.at("range")}, {"opened", false}};
+        }
+        if (!std::filesystem::is_regular_file(resolved) || read_file(resolved, MAX_DOCUMENT_BYTES) != captured) throw CommandError("revision-conflict", "Location target changed on disk");
+        const auto document = "d" + std::to_string(nextDocument);
+        auto target = std::make_unique<Record>(path, captured, true);
+        auto context = query.context; context[document] = target->document.revision();
+        Json result {{"target", summary(document, *target)}, {"range", location.at("range")}, {"opened", true}};
+        documents.emplace(document, std::move(target)); query.context.swap(context); ++nextDocument;
+        return result;
     }
     static const std::map<std::string, std::string>& query_methods() {
         static const std::map<std::string, std::string> methods {
@@ -379,6 +412,7 @@ struct Application::Impl {
     Json submit_query(const Json& params) {
         const auto& methods = query_methods();
         const auto operation = params.at("operation").get<std::string>();
+        const bool navigationOperation = operation == "definition" || operation == "references";
         if (!methods.contains(operation)) throw CommandError("invalid-params", "Unknown asynchronous language operation");
         auto& target = record(params); const auto document = params.at("document").get<std::string>();
         const auto revision = params.at("revision").get<std::uint64_t>();
@@ -400,7 +434,7 @@ struct Application::Impl {
         for (const auto& [id, query] : queries) { std::lock_guard lock(query->mutex); if (query->state == "running") { ++active; pendingBytes += query->inputBytes; } }
         if (active >= MAX_ACTIVE_QUERIES) throw CommandError("language-busy", "Too many active language queries");
         std::size_t bytes {};
-        for (const auto& [id, item] : documents) if (id == document || (operation.starts_with("modules.") && syntax::detect(item->path) == syntax::Language::Cpp)) {
+        for (const auto& [id, item] : documents) if (id == document || navigationOperation || (operation.starts_with("modules.") && syntax::detect(item->path) == syntax::Language::Cpp)) {
             if (item->document.size() > MAX_QUERY_SNAPSHOT_BYTES - bytes) throw CommandError("language-busy", "Language snapshot budget exceeded");
             bytes += item->document.size();
         }
@@ -415,18 +449,19 @@ struct Application::Impl {
         std::vector<LanguageSnapshot> snapshots; const auto uri = make_uri(resolve(target.path));
         for (auto& [id, item] : documents) {
             query->context[id] = item->document.revision();
-            if (id == document || (operation.starts_with("modules.") && syntax::detect(item->path) == syntax::Language::Cpp))
-                snapshots.push_back({make_uri(resolve(item->path)), item->document.text(), item->document.revision(), ++item->lspVersion});
+            if (id == document || navigationOperation || (operation.starts_with("modules.") && syntax::detect(item->path) == syntax::Language::Cpp))
+                snapshots.push_back({item->path, make_uri(resolve(item->path)), item->document.text(), item->document.revision(), syntax::detect(item->path) == syntax::Language::Cpp ? ++item->lspVersion : 0});
         }
         auto connection = start_language(); auto raw = query.get(); const auto directory = root; const auto method = methods.at(operation);
         const auto deadline = QueryClock::now() + std::chrono::milliseconds(timeout);
         const auto id = "l" + std::to_string(nextQuery++);
         query->worker = std::jthread([raw, connection, snapshots = std::move(snapshots), method, params, uri, directory, deadline](std::stop_token stop) mutable {
-            Json result, error; std::string state = "failed";
+            Json result, error; std::string state = "failed"; language::NavigationSet navigation;
             try {
                 auto client = connection->get(deadline, stop); int version {};
                 for (const auto& snapshot : snapshots) {
                     if (stop.stop_requested()) throw CommandError("cancelled", "Language query cancelled");
+                    if (!snapshot.version) continue;
                     const auto current = client->sync_document(snapshot.uri, snapshot.revision, snapshot.text, snapshot.version, stop);
                     if (snapshot.uri == uri) version = current;
                 }
@@ -444,8 +479,14 @@ struct Application::Impl {
                     result = client->request(method, request, static_cast<int>(remaining), stop);
                 }
                 if (stop.stop_requested()) throw CommandError("cancelled", "Language query cancelled");
+                if (operation == "definition" || operation == "references") {
+                    std::map<std::string, std::string_view> opened;
+                    for (const auto& snapshot : snapshots) opened.emplace(snapshot.path, snapshot.text);
+                    navigation = language::collect_locations(result, directory, opened, stop);
+                    if (QueryClock::now() >= deadline) throw CommandError("timeout", "Navigation capture timed out");
+                }
                 result = clean(std::move(result), directory);
-                const auto size = result.dump().size(); auto current = raw->budget->outputBytes.load();
+                const auto size = result.dump().size() + navigation.locations.dump().size() + navigation.textBytes; auto current = raw->budget->outputBytes.load();
                 do { if (size > MAX_QUERY_RESULT_BYTES - current) throw CommandError("language-busy", "Retained language results exceed the budget"); }
                 while (!raw->budget->outputBytes.compare_exchange_weak(current, current + size));
                 raw->outputBytes = size; state = "succeeded";
@@ -461,8 +502,8 @@ struct Application::Impl {
             if (stop.stop_requested()) {
                 state = "cancelled"; error = {{"code", "cancelled"}, {"message", "Language query cancelled"}};
             }
-            if (state != "succeeded") { result = nullptr; if (raw->outputBytes) raw->budget->outputBytes.fetch_sub(raw->outputBytes); raw->outputBytes = 0; }
-            raw->result = std::move(result); raw->error = std::move(error); raw->state = std::move(state);
+            if (state != "succeeded") { result = nullptr; navigation = {}; if (raw->outputBytes) raw->budget->outputBytes.fetch_sub(raw->outputBytes); raw->outputBytes = 0; }
+            raw->result = std::move(result); raw->navigation = std::move(navigation); raw->error = std::move(error); raw->state = std::move(state);
         });
         queries.emplace(id, std::move(query)); return query_status(id);
     }
@@ -543,11 +584,18 @@ struct Application::Impl {
     Json dispatch(const std::string& command, const Json& params) {
         adopt_language();
         if (command == "language.query") return submit_query(params);
+        if (command == "language.navigate") return navigate(params);
+        if (command == "language.release") {
+            const auto id = params.at("query").get<std::string>();
+            if (!queries.contains(id)) throw CommandError("not-found", "Language query does not exist");
+            { std::lock_guard lock(queries.at(id)->mutex); if (queries.at(id)->state == "running") throw CommandError("language-busy", "Cancel and finish the query before releasing it"); }
+            queries.erase(id); return {{"released", true}};
+        }
         if (command == "language.result" || command == "language.cancel") {
             auto id = params.at("query").get<std::string>();
             if (!queries.contains(id)) throw CommandError("not-found", "Language query does not exist");
             if (command == "language.cancel") { std::lock_guard lock(queries.at(id)->mutex); if (queries.at(id)->state == "running") queries.at(id)->worker.request_stop(); }
-            return query_status(id);
+            return query_status(id, params.value("includeResult", true));
         }
         if (command == "workspace.canLeave") return can_leave();
         if (command == "workspace.switch") return switch_workspace(params);
@@ -753,7 +801,7 @@ std::string Application::session_id() const { return impl_->session; }
 const Json& Application::metadata_() {
     static const Json metadata = []() -> Json {
         Json commands = Json::array();
-        for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.canLeave", "workspace.switch", "workspace.files", "workspace.trust", "document.open", "document.read", "document.highlight", "document.find", "document.replace", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.query", "language.result", "language.cancel", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
+        for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.canLeave", "workspace.switch", "workspace.files", "workspace.trust", "document.open", "document.read", "document.highlight", "document.find", "document.replace", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.query", "language.result", "language.cancel", "language.navigate", "language.release", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
         commands.push_back("settings.get"); commands.push_back("settings.update");
         Json operations = Json::array(); for (const auto& [name, method] : Impl::query_methods()) operations.push_back(name);
         Json schemas = Json::object();
@@ -763,7 +811,8 @@ const Json& Application::metadata_() {
             auto field = [&](std::string key, std::string type, bool needed = false) { properties[key] = {{"type", type}}; if (needed) required.push_back(key); };
             if (command == "settings.update") { field("revision", "integer", true); field("changes", "object", true); }
             else if (command == "language.query") { field("document", "string", true); field("revision", "integer", true); field("operation", "string", true); field("position", "object"); field("name", "string"); field("timeoutMs", "integer"); properties["operation"]["enum"] = operations; properties["timeoutMs"]["minimum"] = 100; properties["timeoutMs"]["maximum"] = 120000; }
-            else if (command == "language.result" || command == "language.cancel") field("query", "string", true);
+            else if (command == "language.result" || command == "language.cancel" || command == "language.release") { field("query", "string", true); if (command == "language.result") field("includeResult", "boolean"); }
+            else if (command == "language.navigate") { field("query", "string", true); field("location", "integer", true); }
             else if (command == "document.open") { field("path", "string", true); field("create", "boolean"); }
             else if (command.starts_with("document.") || command.starts_with("language.") || command.starts_with("modules.")) {
                 if (command != "language.stop" && command != "language.diagnostics") field("document", "string", true);
@@ -790,7 +839,7 @@ const Json& Application::metadata_() {
                 });
             }
         }
-        return {{"version", "0.0.1"}, {"protocolVersion", 1}, {"positionEncoding", "utf-16"}, {"editOffsets", "utf-8-bytes"}, {"sessionTransport", "stdio-jsonl"}, {"maxDocumentBytes", MAX_DOCUMENT_BYTES}, {"languageTransport", Language::limits()}, {"asyncLanguage", {{"operations", operations}, {"minTimeoutMs", 100}, {"maxTimeoutMs", 120000}, {"maxActive", Impl::MAX_ACTIVE_QUERIES}, {"maxRetained", Impl::MAX_RETAINED_QUERIES}, {"snapshotBytes", Impl::MAX_QUERY_SNAPSHOT_BYTES}, {"resultBytes", Impl::MAX_QUERY_RESULT_BYTES}, {"revisionBound", true}}}, {"commands", commands}, {"commandSchemas", schemas}};
+        return {{"version", "0.0.1"}, {"protocolVersion", 1}, {"positionEncoding", "utf-16"}, {"editOffsets", "utf-8-bytes"}, {"sessionTransport", "stdio-jsonl"}, {"maxDocumentBytes", MAX_DOCUMENT_BYTES}, {"languageTransport", Language::limits()}, {"asyncLanguage", {{"operations", operations}, {"minTimeoutMs", 100}, {"maxTimeoutMs", 120000}, {"maxActive", Impl::MAX_ACTIVE_QUERIES}, {"maxRetained", Impl::MAX_RETAINED_QUERIES}, {"snapshotBytes", Impl::MAX_QUERY_SNAPSHOT_BYTES}, {"resultBytes", Impl::MAX_QUERY_RESULT_BYTES}, {"resultBytesIncludeNavigationSnapshots", true}, {"navigation", {{"maxLocations", 200}, {"maxTargets", 32}, {"targetSnapshotBytes", Impl::MAX_QUERY_RESULT_BYTES}}}, {"revisionBound", true}}}, {"commands", commands}, {"commandSchemas", schemas}};
     }();
     return metadata;
 }
@@ -824,6 +873,7 @@ Json Application::execute(const Json& request) {
         if (command == "document.replace" && response["data"]["revision"].get<std::uint64_t>() != params["revision"].get<std::uint64_t>()) response["effects"].push_back("document-change");
         if (command == "workspace.switch" && response["data"].value("changed", false)) response["effects"].push_back("workspace-change");
         if (command == "document.save") response["effects"].push_back("file-write");
+        if (command == "language.navigate" && response["data"].value("opened", false)) response["effects"].push_back("document-open");
         if (command == "settings.update") response["effects"].push_back("settings-change");
         if (command == "language.query" || (response["data"].is_object() && response["data"].value("state", "") == "running" && response["data"].contains("task") && !command.starts_with("task."))) response["effects"].push_back("tool-execution");
     } catch (const CommandError& error) { response["ok"] = false; response["error"] = {{"code", error.code}, {"message", redact(error.what(), impl_->root)}}; }

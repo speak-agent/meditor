@@ -29,6 +29,7 @@ int main() {
     require(editor.selection() == huxerui::TextSelection{0, 0});
     require(editor.select_lsp_range({0, 3}, {0, 5}, revision));
     require(editor.selection() == huxerui::TextSelection{2, 4});
+    require(editor.lsp_position().line == 0 && editor.lsp_position().character == 5);
     require(editor.select_lsp_range({1, 11}, {1, 16}, revision));
     require(editor.selection() == huxerui::TextSelection{16, 21});
     const auto selected = editor.selection();
@@ -50,9 +51,11 @@ int main() {
     require(editor.selection() == huxerui::TextSelection{7, 13});
     require(!editor.request_focus());
     mountedEditor = std::make_shared<ui::EditorState>(editor);
+    editor.focus_when_mounted();
     {
         huxerui::Application gui(editor_root, {.show_debug_overlay = false});
         huxerui::testing::UiTest test(gui, {.viewport = {500, 400}}); test.Pump();
+        require(test.Find(huxerui::testing::UiSelector::Key("code-editor")).One().focused);
         require(editor.request_focus()); test.Pump();
         require(test.Find(huxerui::testing::UiSelector::Key("code-editor")).One().focused);
     }
