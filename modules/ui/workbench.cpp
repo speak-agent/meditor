@@ -195,7 +195,7 @@ View workbench() {
             Text("m", TextRole::Title).With(Padding(8), Background(Color::Rgb(72, 107, 239)), Foreground(Color::White()), CornerRadius(9)),
             Text("meditor", TextRole::Title),
             compact ? View(Spacer().With(Grow{1})) : View(Text(data->selected ? data->name : "C++ Modules, naturally.", TextRole::Label).With(Grow{1}, Foreground(muted))),
-            Button(compact ? "Files" : "Explorer").OnClick([data, refresh] { data->navigation = !data->navigation; refresh(); }),
+            Button(compact ? "Files" : "Explorer").Key("explorer-toggle").OnClick([data, refresh] { data->navigation = !data->navigation; refresh(); }),
             Button(data->dark ? "Light" : "Dark").OnClick(toggleTheme),
         }.Key("window-title-bar").With(Padding(12), Spacing(12), CrossAlign(CrossAxisAlignment::Center));
         View body;

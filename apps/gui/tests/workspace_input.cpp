@@ -32,7 +32,7 @@ int main() {
         Application application(meditor::ui::workbench, {.show_debug_overlay = false});
         UiTest ui(application, {.viewport = viewport});
         ui.Pump(); // Commit the queued startup lifecycle before interacting.
-        if (viewport.width < 600) ui.Find(UiSelector::Text("Files")).Tap();
+        ui.Find(UiSelector::Key("explorer-toggle")).Tap();
         const auto editor = UiSelector::Key("code-editor");
         require(ui.Find(editor).One().in_viewport);
         ui.Find(editor).Tap({.device_kind = deviceKind});
@@ -43,6 +43,8 @@ int main() {
             TextInputCommand command; command.kind = TextInputCommandKind::CommitText; command.text = text;
             require(ui.SendTextInput({session->session_id, {command}}).result_code == TextInputResultCode::Ok);
             ui.Pump();
+            require(ui.ActiveTextInput().has_value());
+            require(ui.ActiveTextInput()->session_id == session->session_id);
         };
         commit("export module 世界; // 🙂\n");
         require(read(source) == original);
@@ -56,12 +58,16 @@ int main() {
         require(read(source) == "export module 世界; // 🙂\n");
 
         // Replacing the editor by settings must end its native input session.
+        const auto previousSession = ui.ActiveTextInput()->session_id;
         ui.Find(UiSelector::Key("settings-entry")).Tap();
         require(!ui.Find(editor).Exists());
         require(!ui.ActiveTextInput().has_value());
         ui.PressKey(Key::Escape);
         ui.Find(editor).Tap({.device_kind = deviceKind});
         require(ui.ActiveTextInput().has_value());
+        require(ui.ActiveTextInput()->session_id != previousSession);
+        TextInputCommand stale; stale.kind = TextInputCommandKind::CommitText; stale.text = "stale";
+        require(ui.SendTextInput({previousSession, {stale}}).result_code == TextInputResultCode::SessionMismatch);
         ui.PressKey(Key::A, {.control = true});
         commit(original);
         ui.Find(UiSelector::Text("Save")).Tap();
