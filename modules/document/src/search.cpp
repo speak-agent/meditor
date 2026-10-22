@@ -5,7 +5,7 @@ import std;
 
 namespace meditor {
 namespace {
-constexpr std::size_t MAX_BYTES {32 * 1024 * 1024};
+constexpr std::size_t MAX_BYTES {MAX_DOCUMENT_BYTES};
 std::size_t units(std::string_view text) {
     std::size_t count {}; for (unsigned char c : text) if ((c & 0xc0) != 0x80) count += c >= 0xf0 ? 2 : 1;
     return count;

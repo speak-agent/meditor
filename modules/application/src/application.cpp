@@ -187,7 +187,7 @@ struct Application::Impl {
         bool exists = std::filesystem::exists(path);
         if (!exists && !params.value("create", false)) throw CommandError("not-found", "File does not exist");
         auto id = "d" + std::to_string(nextDocument++);
-        auto record = std::make_unique<Record>(name, exists ? read_file(path) : std::string(), exists);
+        auto record = std::make_unique<Record>(name, exists ? read_file(path, MAX_DOCUMENT_BYTES) : std::string(), exists);
         auto result = summary(id, *record); documents.emplace(id, std::move(record)); return result;
     }
     void require_trust() const { if (!trusted) throw CommandError("workspace-untrusted", "Explicitly trust this workspace before executing tools"); }
@@ -359,7 +359,7 @@ struct Application::Impl {
                                 inserted = normalize_line_endings(inserted, record.format.lineEnding);
                             }
                             const auto a = space == "display" ? display.raw_offset(match.start) : match.start, b = space == "display" ? display.raw_offset(match.end) : match.end;
-                            if (inserted.size() > 32 * 1024 * 1024 || raw.size() - (b - a) > 32 * 1024 * 1024 - inserted.size()) throw std::length_error("Replacement exceeds the document size limit");
+                            if (inserted.size() > MAX_DOCUMENT_BYTES || raw.size() - (b - a) > MAX_DOCUMENT_BYTES - inserted.size()) throw std::length_error("Replacement exceeds the document size limit");
                             if (space == "raw") nextStart = a + inserted.size();
                             else {
                                 auto logical = replacement;
@@ -387,12 +387,13 @@ struct Application::Impl {
                     } else { start = edit.at("start"); end = edit.at("end"); }
                     edits.push_back({start, end, edit.at("text").get<std::string>()});
                 }
-                record.document.apply(std::move(edits), revision, params.value("historyGroup", std::string{}));
+                try { record.document.apply(std::move(edits), revision, params.value("historyGroup", std::string{})); }
+                catch (const std::length_error&) { throw CommandError("document-too-large", "Document exceeds the editing limit"); }
             } else if (command == "document.undo") record.document.undo(revision);
             else if (command == "document.redo") record.document.redo(revision);
             else if (command == "document.save") {
                 auto path = resolve(record.path);
-                if (record.existed != std::filesystem::exists(path) || (record.existed && read_file(path) != record.document.saved_text())) throw CommandError("disk-conflict", "The file changed on disk; preserve both versions before saving");
+                if (record.existed != std::filesystem::exists(path) || (record.existed && read_file(path, MAX_DOCUMENT_BYTES) != record.document.saved_text())) throw CommandError("disk-conflict", "The file changed on disk; preserve both versions before saving");
                 auto text = record.document.text(); write_file_atomic(path, text); record.document.mark_saved(text); record.existed = true;
                 if (language && record.synced) language->notify("textDocument/didSave", {{"textDocument", {{"uri", make_uri(path)}}}});
             } else throw CommandError("unknown-command", "Unknown document command");

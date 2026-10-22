@@ -28,8 +28,10 @@ bool valid_utf8(std::string_view text) {
     try { for (std::size_t i = 0; i < text.size();) i += decode(text, i).second; return true; }
     catch (...) { return false; }
 }
-Document::Document(std::string text) : original_(std::move(text)), saved_(original_) {
+Document::Document(std::string text) : original_(std::move(text)) {
+    if (original_.size() > MAX_DOCUMENT_BYTES) throw std::length_error("Document exceeds the editing limit");
     if (!valid_utf8(original_)) throw std::runtime_error("Only valid UTF-8 documents can be edited");
+    saved_ = original_;
     if (!original_.empty()) pieces_.push_back({false, 0, original_.size()});
 }
 std::string Document::text() const {
@@ -54,6 +56,13 @@ void Document::apply(std::vector<Edit> edits, std::uint64_t expectedRevision, st
     for (const auto& edit : edits) {
         if (edit.start > edit.end || !boundary(before, edit.start) || !boundary(before, edit.end) || (!first && edit.start < previousEnd) || !valid_utf8(edit.text)) throw std::runtime_error("Invalid or overlapping edit ranges");
         previousEnd = edit.end; first = false;
+    }
+    // Validate the final batch size, independent of reverse application order.
+    auto finalBytes = before.size();
+    for (const auto& edit : edits) finalBytes -= edit.end - edit.start;
+    for (const auto& edit : edits) {
+        if (edit.text.size() > MAX_DOCUMENT_BYTES - finalBytes) throw std::length_error("Document exceeds the editing limit");
+        finalBytes += edit.text.size();
     }
     if (edits.empty()) return;
     auto next = pieces_;

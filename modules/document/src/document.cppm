@@ -5,6 +5,7 @@ export import meditor.syntax;
 import std;
 
 export namespace meditor {
+inline constexpr std::size_t MAX_DOCUMENT_BYTES {32 * 1024 * 1024};
 enum class LineEnding { Lf, CrLf };
 struct TextFormat {
     bool utf8Bom {};

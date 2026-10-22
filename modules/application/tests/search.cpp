@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Sunrisepeak & mcpp-community
 import std;
 import meditor.application;
+import meditor.document;
 
 namespace {
 void require(bool value, std::source_location at = std::source_location::current()) { if (!value) throw std::runtime_error("Search command contract failed at line " + std::to_string(at.line())); }
@@ -33,5 +34,15 @@ int main() {
     require(excessive["error"]["code"] == "document-too-large");
     require(call("document.read", {{"document", largeId}})["text"] == std::string(100, 'a'));
     require(call("document.read", {{"document", largeId}})["revision"] == 2 && !std::filesystem::exists(root / "large.cppm"));
+    {
+        std::ofstream output(root / "boundary.cppm", std::ios::binary);
+        const std::string block(1024 * 1024, 'a');
+        for (std::size_t written = 0; written < meditor::MAX_DOCUMENT_BYTES; written += block.size()) output << block;
+    }
+    auto boundary = call("document.open", {{"path", "boundary.cppm"}})["document"].get<std::string>();
+    auto oversizedEdit = app.execute({{"command", "document.edit"}, {"params", {{"document", boundary}, {"revision", 1}, {"edits", Json::array({{{"start", 0}, {"end", 0}, {"text", "x"}}})}}}});
+    require(oversizedEdit["error"]["code"] == "document-too-large" && oversizedEdit["effects"].empty());
+    auto metadata = call("document.open", {{"path", "boundary.cppm"}});
+    require(metadata["revision"] == 1 && metadata["dirty"] == false && metadata["bytes"] == meditor::MAX_DOCUMENT_BYTES);
     std::println("Revisioned search/replace commands preserve raw coordinates, BOM, mixed endings and atomic failure: passed");
 }
