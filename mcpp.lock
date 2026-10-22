@@ -5,10 +5,16 @@
 # file must not change depending on which command ran last.
 version = 2
 
+[package."nlohmann.json"]
+namespace = "nlohmann"
+version = "3.12.0"
+source  = "index+nlohmann@3.12.0"
+hash    = "fnv1a:65af05f998b1b9d7"
+
 [package."huxerui.huxerui"]
 version = "meditor"
-source  = "git+https://github.com/Sunrisepeak/HuxerUI.git#branch=meditor@0e479bf26f90a6560acb8f1b4fb542a4dda72ca8"
-hash    = "fnv1a:ce7dc2b79c9b300f"
+source  = "git+https://github.com/Sunrisepeak/HuxerUI.git#branch=meditor@ee830555b8df0db1931c54b702b499a98e32cf29"
+hash    = "fnv1a:2d07530431068119"
 
 [package."mcpp.plugins"]
 namespace = "mcpp"
@@ -16,8 +22,3 @@ version = "0.11.1"
 source  = "index+mcpp@0.11.1"
 hash    = "fnv1a:51bb1145b6507738"
 
-[package."nlohmann.json"]
-namespace = "nlohmann"
-version = "3.12.0"
-source  = "index+nlohmann@3.12.0"
-hash    = "fnv1a:65af05f998b1b9d7"
