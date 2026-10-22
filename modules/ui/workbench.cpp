@@ -241,7 +241,7 @@ View workbench() {
             }.With(Padding(8), Spacing(6));
             auto center = Column {toolbar, tabs, std::move(editor),
                 data->output.empty() ? View{} : View(ScrollView {SelectionArea {Text(data->output).Style({.font = Font::Monospace(12)})}}.With(Frame{.height = 160}, Padding(12), Background(pane)))
-            }.With(Grow{1}, CrossAlign(CrossAxisAlignment::Stretch));
+            }.Key("workspace-editor-pane").With(Grow{1}, CrossAlign(CrossAxisAlignment::Stretch));
             body = Row {data->navigation ? View(sidebar) : View{}, (!compact || !data->navigation) ? View(center) : View{}}.With(Grow{1}, CrossAlign(CrossAxisAlignment::Stretch));
         }
         if (data->settingsOpen) {

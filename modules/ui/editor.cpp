@@ -327,7 +327,7 @@ std::string EditorState::document_id() const { return impl_->document; }
 TextSelection EditorState::selection() const { return impl_->value.selection; }
 std::shared_ptr<TextInputClient> EditorState::text_input_client() const { return impl_; }
 View code_editor(std::shared_ptr<EditorState> state) {
-    return Canvas([](PaintContext&, Size) {}).With(Grow{1}, Frame{.min_width = 120, .min_height = 160}, Focusable{}, PointerCursor{PointerCursorKind::Text}, ClipChildren{}, EditorSurface{state->impl_})
+    return Canvas([](PaintContext&, Size) {}).Key("code-editor").With(Grow{1}, Frame{.min_width = 120, .min_height = 160}, Focusable{}, PointerCursor{PointerCursorKind::Text}, ClipChildren{}, EditorSurface{state->impl_})
         .On<ViewEvents::ScrollInput>([state](const ScrollInputEvent& event) {
             auto& model = *state->impl_;
             auto row = static_cast<std::int64_t>(model.topLine) + static_cast<std::int64_t>(std::round(event.delta_y / model.lineHeight));
