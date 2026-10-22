@@ -10,14 +10,16 @@ namespace meditor::language {
 using Json = nlohmann::json;
 namespace {
 std::optional<std::filesystem::path> relative_inside(const std::filesystem::path& root, const std::filesystem::path& candidate) {
-    auto item = candidate.begin(); std::filesystem::path prefix;
-    for (auto expected = root.begin(); expected != root.end(); ++expected) {
-        if (item == candidate.end()) return {};
-#if !defined(_WIN32)
-        if (*item != *expected) return {};
-#endif
-        prefix /= *item++;
-    }
+    // Some NDK std modules do not expose path-iterator equality. Split canonical generic spellings instead.
+    const auto base = path_to_utf8(root), value = path_to_utf8(candidate);
+    if (base.empty() || !root.is_absolute()) return {};
+    const bool trailing = base.back() == '/';
+    const auto separators = static_cast<std::size_t>(std::count(base.begin(), base.end(), '/')) + (trailing ? 0 : 1);
+    std::size_t seen {}, end = value.size();
+    for (std::size_t i = 0; i < value.size(); ++i) if (value[i] == '/' && ++seen == separators) { end = i + (trailing ? 1 : 0); break; }
+    if (trailing && seen < separators) return {};
+    const auto prefix = std::filesystem::u8path(value.substr(0, end));
+    if (!same_path_spelling(prefix, root)) return {};
 #if defined(_WIN32)
     // Prefix spelling can differ on Windows. Directory identity also handles case-sensitive folders safely.
     if (prefix != root) {
@@ -25,9 +27,8 @@ std::optional<std::filesystem::path> relative_inside(const std::filesystem::path
         if (!same_path_spelling(prefix.root_name(), root.root_name()) || !std::filesystem::equivalent(prefix, root, ec) || ec) return {};
     }
 #endif
-    std::filesystem::path relative;
-    for (; item != candidate.end(); ++item) relative /= *item;
-    return relative.empty() ? std::filesystem::path(".") : relative;
+    if (end < value.size() && value[end] == '/') ++end;
+    return end == value.size() ? std::filesystem::path(".") : std::filesystem::u8path(value.substr(end));
 }
 int hex(char value) {
     if (value >= '0' && value <= '9') return value - '0';

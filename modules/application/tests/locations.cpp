@@ -36,6 +36,9 @@ int main() {
     meditor::write_file_atomic(target, original);
     meditor::write_file_atomic(base / "outside.cppm", "private synthetic text");
     require(workspace_path_for_uri(uri(target), root) == name);
+    require(workspace_path_for_uri(uri(root / "nested/file.cppm"), root) == "nested/file.cppm");
+    require(!workspace_path_for_uri(uri(base / "project-other/file.cppm"), root));
+    require(workspace_path_for_uri(uri(target), root.root_path()) == meditor::path_to_utf8(target.lexically_relative(root.root_path())));
     require(workspace_path_for_uri("file://LOCALHOST" + uri(target).substr(7), root) == name);
     auto uppercase = uri(target); uppercase.replace(0, 7, "FILE://");
     require(workspace_path_for_uri(uppercase, root) == name);

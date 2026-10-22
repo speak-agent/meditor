@@ -28,6 +28,10 @@ URI escapes, remote authorities, query/fragment suffixes and escaping symlinks
 are rejected. Windows stream paths are rejected; directory identity checks
 support case aliases without accepting different case-sensitive directories.
 Known macOS `/var` versus `/private/var` temporary-path aliases are normalized.
+Android uses canonical generic path spellings for component boundaries because
+the NDK `std` module does not expose path-iterator comparison operators. Boundary
+tests also cover nested targets, similar directory-name prefixes and filesystem
+roots; native identity checks remain in place for Windows case aliases.
 
 Target text is captured after receiving the backend response. Opened documents
 use their captured unsaved buffers; unopened targets use bounded file reads.
