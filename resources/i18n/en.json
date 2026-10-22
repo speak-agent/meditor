@@ -136,6 +136,7 @@
   "task.closeOutput": "Close",
   "task.output": "Output",
   "task.waitingOutput": "Waiting for tool output…",
+  "task.noOutput": "This task produced no output.",
   "welcome.description": "Open an mcpp project to edit modules, explore imports and build with confidence.",
   "welcome.privacy": "Private by default · no telemetry · local tools",
   "welcome.subtitle": "Native Modules. One workspace. Your tools, together.",

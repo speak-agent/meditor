@@ -42,6 +42,7 @@ int run_tool(int argc, char** argv) {
     if (mode == "fail") return 17;
     if (mode == "build") {
         std::ifstream configuration(".meditor-fixture-task-mode"); std::string taskMode; std::getline(configuration, taskMode);
+        if (taskMode == "silent") return 0;
         if (taskMode == "stream" || taskMode == "stream-fail") {
             std::println("fixture: compiling"); std::cout.flush();
             { std::ofstream started(".meditor-fixture-task-started"); started << "started"; }

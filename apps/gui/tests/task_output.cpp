@@ -112,6 +112,16 @@ int main(int argc, char** argv) {
         require(ui.Find(key("task-output")).One().text->find("fixture: compilation failed") != std::string::npos);
         require(!ui.Find(key("task-progress")).Exists() && ui.Find(key("action-build")).One().enabled);
         require(meditor::read_file(project / "main.cppm") == source);
+
+        meditor::write_file_atomic(project / ".meditor-fixture-task-mode", "silent");
+        ui.Find(key("action-build")).Tap(); wait([&] { return !ui.Find(key("action-cancel-task")).One().enabled; });
+        require(ui.Find(key("task-state")).One().text == messages.text("status.task.succeeded"));
+        require(ui.Find(key("task-output")).One().text == messages.text("task.noOutput"));
+        require(!ui.Find(key("task-progress")).Exists());
+        ui.Find(key("output-close")).Tap(); require(ui.Find(key("output-toggle")).One().enabled);
+        ui.Find(key("output-toggle")).Tap(); require(ui.Find(key("output-panel")).Exists());
+        ui.Find(key("panel-language")).Tap(); require(ui.Find(key("panel-output")).One().enabled);
+        ui.Find(key("panel-output")).Tap(); require(ui.Find(key("task-output")).One().text == messages.text("task.noOutput"));
         meditor::write_file_atomic(project / ".meditor-fixture-task-mode", "stream");
     }
     std::println("Live process output, real success/failure/cancellation, one bottom panel, retained language results and reduced-motion progress: passed");

@@ -519,7 +519,7 @@ View workbench(WorkspaceServices services) {
                 std::vector<std::size_t> rows(data->languageRows.size()); std::iota(rows.begin(), rows.end(), 0);
                 languagePanel = Column {
                     Flow {
-                        !data->output.empty() || data->busy ? View(Button(t("task.output")).Key("panel-output").OnClick([data, refresh] { data->bottomPanel = "output"; refresh(); })) : View{},
+                        !data->taskKind.empty() ? View(Button(t("task.output")).Key("panel-output").OnClick([data, refresh] { data->bottomPanel = "output"; refresh(); })) : View{},
                         Text(t(language_title(data->languageOperation)), TextRole::Title),
                         Button(t("language.refresh")).Key("language-refresh").With(Enabled(data->languageQuery.empty() && !data->active.empty() && data->editors.at(data->active)->language_id() == "cpp")).OnClick([data, queryLanguage] { queryLanguage(data->languageOperation); }),
                         Button(t("language.cancel")).Key("language-cancel").With(Enabled(!data->languageQuery.empty())).OnClick([data, refresh] { data->cancel_language(); data->languageRows.clear(); data->languageState = "language.cancelled"; refresh(); }),
@@ -574,7 +574,7 @@ View workbench(WorkspaceServices services) {
                     }.With(Spacing(8)),
                     Text(t(data->taskStateKey), TextRole::Label).Key("task-state").With(Foreground(muted)),
                     data->busy ? View(ProgressBar().Key("task-progress").With(Frame{.height = 4})) : View{},
-                    ScrollView {SelectionArea {Text(data->output.empty() ? t("task.waitingOutput") : data->output).Style({.font = Font::Monospace(12)}).Key("task-output")}}.With(Grow{1}),
+                    ScrollView {SelectionArea {Text(data->output.empty() ? t(data->busy ? "task.waitingOutput" : "task.noOutput") : data->output).Style({.font = Font::Monospace(12)}).Key("task-output")}}.With(Grow{1}),
                 }.Key("output-panel").With(Frame{.height = compact ? 220.0F : 240.0F}, Padding(12), Spacing(8), Background(pane), CrossAlign(CrossAxisAlignment::Stretch));
             }
             auto center = Column {toolbar, tabs,
@@ -670,7 +670,7 @@ View workbench(WorkspaceServices services) {
         auto page = Column {header, Divider(), body,
             Row {Text(data->status_text(), TextRole::Label).Key("status-text").With(Grow{1}),
                 compact ? View{} : View(Text(languageLabel + formatLabel, TextRole::Label).Key("document-language").With(Foreground(muted))),
-                data->selected ? View(Button(t("task.output")).Key("output-toggle").With(Enabled(data->busy || !data->output.empty()), Border{data->busy ? colors.accent : Color::Transparent(), 1}).OnClick([data, refresh] { data->bottomPanel = data->bottomPanel == "output" ? "" : "output"; refresh(); })) : View{},
+                data->selected ? View(Button(t("task.output")).Key("output-toggle").With(Enabled(!data->taskKind.empty()), Border{data->busy ? colors.accent : Color::Transparent(), 1}).OnClick([data, refresh] { data->bottomPanel = data->bottomPanel == "output" ? "" : "output"; refresh(); })) : View{},
                 Button(t("about.entry")).Key("about-entry").OnClick(showAbout),
                 Button(t("settings.title")).Key("settings-entry").OnClick(showSettings)
             }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))
