@@ -449,6 +449,16 @@ bool EditorState::select_byte_range(std::size_t start, std::size_t end, std::uin
     try { impl_->presentation.raw_offset(start); impl_->presentation.raw_offset(end); } catch (...) { return false; }
     return select_match({units(std::string_view(impl_->value.text).substr(0, start)), units(std::string_view(impl_->value.text).substr(0, end))}, revision);
 }
+bool EditorState::select_lsp_range(Position start, Position end, std::uint64_t revision) {
+    impl_->refresh_();
+    if (revision != impl_->documentRevision || std::tie(start.line, start.character) > std::tie(end.line, end.character)) return false;
+    try {
+        const auto& presentation = impl_->presentation;
+        const auto first = presentation.display_offset(utf8_offset_at(presentation.raw_text(), start));
+        const auto last = presentation.display_offset(utf8_offset_at(presentation.raw_text(), end));
+        return first <= last && select_byte_range(first, last, revision);
+    } catch (...) { return false; }
+}
 bool EditorState::set_search_results(std::vector<TextRange> matches, std::uint64_t revision) {
     if (revision != impl_->documentRevision) return false;
     TextOffset end {};

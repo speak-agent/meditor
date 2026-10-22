@@ -16,6 +16,14 @@ int main() {
     require(view.format().utf8Bom && view.format().mixedLineEndings && view.format().lineEnding == LineEnding::CrLf);
     require(view.format().lineBreaks == 3 && view.line_endings().size() == 3);
     require(view.raw_offset(0) == 3 && view.raw_offset(1) == 4 && view.raw_offset(2) == 6 && view.raw_offset(view.text().size()) == raw.size());
+    require(view.display_offset(0) == 0 && view.display_offset(3) == 0 && view.display_offset(4) == 1 && view.display_offset(6) == 2);
+    for (auto byte : {1U, 2U, 5U, 7U, 8U, 13U, 14U, 15U, 19U, 21U}) {
+        bool invalid {}; try { view.display_offset(byte); } catch (...) { invalid = true; } require(invalid);
+    }
+    require(utf8_offset_at(raw, {1, 2}) == 12 && utf8_offset_at(raw, {1, 4}) == 16);
+    for (auto position : {Position{1, 3}, Position{1, 6}, Position{4, 0}}) {
+        bool invalid {}; try { utf8_offset_at(raw, position); } catch (...) { invalid = true; } require(invalid);
+    }
     bool rejected {}; try { view.raw_offset(3); } catch (...) { rejected = true; } require(rejected);
     require(encode_text_format(view.text(), view.line_endings(), true) == raw);
     require(normalize_line_endings("a\r\nb\n", LineEnding::CrLf) == "a\r\nb\r\n");
@@ -34,7 +42,19 @@ int main() {
             if (offset < sample.text().size() && (static_cast<unsigned char>(sample.text()[offset]) & 0xc0) == 0x80) continue;
             auto original = sample.raw_offset(offset);
             require(original <= bytes.size());
+            require(sample.display_offset(original) == offset);
             if (offset < sample.text().size()) require(bytes[original] == sample.text()[offset] || (bytes[original] == '\r' && sample.text()[offset] == '\n'));
+        }
+        for (std::size_t offset = 0; offset <= bytes.size(); ++offset) {
+            const bool continuation = offset < bytes.size() && (static_cast<unsigned char>(bytes[offset]) & 0xc0) == 0x80;
+            const bool insidePair = offset && offset < bytes.size() && bytes[offset - 1] == '\r' && bytes[offset] == '\n';
+            bool invalid {};
+            try {
+                const auto display = sample.display_offset(offset);
+                require(display <= sample.text().size());
+                require(sample.raw_offset(display) == offset || (offset == 0 && sample.format().utf8Bom));
+            } catch (...) { invalid = true; }
+            require(invalid == (continuation || insidePair));
         }
     }
     std::println("BOM/CRLF display mapping, exact mixed-ending round trips and invalid input: passed");

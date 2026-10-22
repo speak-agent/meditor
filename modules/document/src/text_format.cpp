@@ -52,4 +52,19 @@ std::size_t TextPresentation::raw_offset(std::size_t byte) const {
         throw std::runtime_error("Invalid display UTF-8 boundary");
     return byte + (format_.utf8Bom ? 3 : 0) + static_cast<std::size_t>(std::lower_bound(crlf_.begin(), crlf_.end(), byte) - crlf_.begin());
 }
+std::size_t TextPresentation::display_offset(std::size_t byte) const {
+    if (byte > raw_.size() || (byte < raw_.size() && (static_cast<unsigned char>(raw_[byte]) & 0xc0) == 0x80))
+        throw std::runtime_error("Invalid raw UTF-8 boundary");
+    const std::size_t bom = format_.utf8Bom ? 3 : 0;
+    if (!byte) return 0;
+    std::size_t first {}, last = crlf_.size();
+    while (first < last) {
+        const auto middle = first + (last - first) / 2;
+        if (crlf_[middle] + bom + middle < byte) first = middle + 1;
+        else last = middle;
+    }
+    if (first && crlf_[first - 1] + bom + first == byte)
+        throw std::runtime_error("Raw offset is inside a CRLF pair");
+    return byte - bom - first;
+}
 }

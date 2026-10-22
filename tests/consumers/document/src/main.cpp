@@ -17,5 +17,6 @@ int main() {
     if (meditor::find_text("你好 🙂 你好", "你好").total != 2) return 5;
     auto changed = meditor::replace_all_display(view, "a", "X", meditor::LineEnding::CrLf);
     if (changed.count != 1 || changed.text != "\xef\xbb\xbf" "X\r\nb\n") return 6;
+    if (view.display_offset(meditor::utf8_offset_at(view.raw_text(), {1, 1})) != 3) return 7;
     std::println("independent document and syntax consumer: passed");
 }

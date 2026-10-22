@@ -31,6 +31,9 @@ public:
     TextFormat format() const noexcept;
     std::span<const LineEnding> line_endings() const noexcept;
     std::size_t raw_offset(std::size_t displayByte) const;
+    // Rejects UTF-8 continuation bytes and the interior of a CRLF pair.
+    // Raw offset zero and the boundary after a hidden BOM both map to zero.
+    std::size_t display_offset(std::size_t rawByte) const;
 };
 struct TextMatch {
     std::size_t start {}, end {}, utf16Start {}, utf16End {};
@@ -45,6 +48,8 @@ struct Position {
     std::size_t line {};
     std::size_t character {};
 };
+// UTF-16 coordinates in the supplied UTF-8 text, including any BOM and CR.
+std::size_t utf8_offset_at(std::string_view text, Position position);
 struct Edit {
     std::size_t start {};
     std::size_t end {};

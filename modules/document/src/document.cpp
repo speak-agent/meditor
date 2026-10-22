@@ -105,7 +105,10 @@ bool Document::redo(std::uint64_t expectedRevision) {
 void Document::mark_saved(std::string text) { saved_ = std::move(text); }
 const std::string& Document::saved_text() const noexcept { return saved_; }
 std::size_t Document::offset_at(Position position) const {
-    const auto value = text(); std::size_t line {}, column {}, i {};
+    return utf8_offset_at(text(), position);
+}
+std::size_t utf8_offset_at(std::string_view value, Position position) {
+    std::size_t line {}, column {}, i {};
     while (i < value.size()) {
         if (line == position.line && column == position.character) return i;
         auto [point, count] = decode(value, i);
