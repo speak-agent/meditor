@@ -20,6 +20,7 @@ public:
     void insert(std::string text);
     std::string document_id() const;
     bool highlighting_limited() const;
+    std::string language_id() const;
     huxerui::TextSelection selection() const;
     std::shared_ptr<huxerui::TextInputClient> text_input_client() const;
 };

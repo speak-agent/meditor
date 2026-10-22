@@ -10,7 +10,7 @@ void require(bool value, std::source_location at = std::source_location::current
 }
 int main() {
     using namespace meditor::syntax;
-    require(detect("src/main.CPPM") == Language::Cpp && detect("notes.md") == Language::Plain);
+    require(detect("src/main.CPPM") == Language::Cpp && detect("notes.md") == Language::Markdown);
     Cache cache;
     std::vector<std::string_view> source {"export module 世界; // 🙂", "/* comment", "return */ import std;", "auto s = u8R\"tag(/*", "export module fake;", ")tag\"; int n = 1'024 + 0x1.fp+2;", "#define VALUE \"text\""};
     cache.update(source, Language::Cpp);

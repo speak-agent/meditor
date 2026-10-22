@@ -11,7 +11,9 @@ bool keyword(std::string_view word) {
     static constexpr std::string_view WORDS {" alignas alignof and and_eq asm auto bitand bitor bool break case catch char char8_t char16_t char32_t class compl concept const consteval constexpr constinit const_cast continue co_await co_return co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept not not_eq nullptr operator or or_eq private protected public register reinterpret_cast requires return short signed sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename union unsigned using virtual void volatile wchar_t while xor xor_eq module import "};
     return WORDS.find(" " + std::string(word) + " ") != std::string_view::npos;
 }
-void scan(Line& line) {
+}
+namespace detail {
+void scan_cpp(Line& line) {
     using Mode = State::Mode;
     auto& state = line.after;
     const std::string_view text {line.text};
@@ -118,7 +120,38 @@ Language detect(std::string_view fileName) {
     for (auto& c : extension) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
     for (auto known : {".cppm", ".ixx", ".mpp", ".cpp", ".cc", ".cxx", ".c", ".h", ".hh", ".hpp", ".hxx"})
         if (extension == known) return Language::Cpp;
+    if (extension == ".md" || extension == ".markdown") return Language::Markdown;
+    if (extension == ".json") return Language::Json;
+    if (extension == ".jsonc") return Language::Jsonc;
+    if (extension == ".toml" || fileName == "mcpp.lock" || fileName.ends_with("/mcpp.lock") || fileName.ends_with("\\mcpp.lock")) return Language::Toml;
     return Language::Plain;
+}
+std::string_view language_name(Language language) {
+    switch (language) {
+    case Language::Plain: return "plain";
+    case Language::Cpp: return "cpp";
+    case Language::Markdown: return "markdown";
+    case Language::Json: return "json";
+    case Language::Jsonc: return "jsonc";
+    case Language::Toml: return "toml";
+    }
+    return "plain";
+}
+std::string_view role_name(Role role) {
+    switch (role) {
+    case Role::Keyword: return "keyword";
+    case Role::Comment: return "comment";
+    case Role::String: return "string";
+    case Role::Number: return "number";
+    case Role::Directive: return "directive";
+    case Role::Key: return "key";
+    case Role::Heading: return "heading";
+    case Role::Emphasis: return "emphasis";
+    case Role::Link: return "link";
+    case Role::Code: return "code";
+    case Role::Marker: return "marker";
+    }
+    return "unknown";
 }
 void Cache::update(std::span<const std::string_view> lines, Language language) {
     std::size_t bytes {}; limited_ = false;
@@ -131,9 +164,15 @@ void Cache::update(std::span<const std::string_view> lines, Language language) {
     std::size_t tokenCount {};
     for (std::size_t row = 0; row < lines.size(); ++row) {
         if (language == language_ && row < old.size() && old[row].text == lines[row] && old[row].before == state) lines_.push_back(std::move(old[row]));
-        else { Line line {.text = std::string(lines[row]), .before = state, .after = state}; scan(line); lines_.push_back(std::move(line)); }
+        else {
+            Line line {.text = std::string(lines[row]), .before = state, .after = state};
+            if (language == Language::Cpp) detail::scan_cpp(line);
+            else if (language == Language::Markdown) detail::scan_markdown(line);
+            else detail::scan_config(line, language);
+            lines_.push_back(std::move(line));
+        }
         tokenCount += lines_.back().tokens.size();
-        if (tokenCount > MAX_TOKENS) { lines_.clear(); limited_ = true; language_ = language; return; }
+        if (lines_.back().limited || tokenCount > MAX_TOKENS) { lines_.clear(); limited_ = true; language_ = language; return; }
         state = lines_.back().after;
     }
     language_ = language;

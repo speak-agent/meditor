@@ -344,9 +344,13 @@ View workbench() {
                     .On<ViewEvents::BackRequested>(closeAbout);
             }
         }
+        const auto language = data->active.empty() ? std::string("cpp") : data->editors.at(data->active)->language_id();
+        const auto languageLabel = language == "cpp" ? std::string("C++23 · Modules") :
+            language == "markdown" ? std::string("Markdown") : language == "json" ? std::string("JSON") :
+            language == "jsonc" ? std::string("JSONC") : language == "toml" ? std::string("TOML") : t("editor.plainText");
         auto page = Column {header, Divider(), body,
             Row {Text(data->status_text(), TextRole::Label).Key("status-text").With(Grow{1}),
-                compact ? View{} : View(Text("C++23 · Modules", TextRole::Label).With(Foreground(muted))),
+                compact ? View{} : View(Text(languageLabel, TextRole::Label).Key("document-language").With(Foreground(muted))),
                 Button(t("about.entry")).Key("about-entry").OnClick(showAbout),
                 Button(t("settings.title")).Key("settings-entry").OnClick(showSettings)
             }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))

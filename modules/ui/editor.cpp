@@ -331,7 +331,13 @@ public:
                 case syntax::Role::Keyword: color = model.dark ? Color::Rgb(197, 157, 255) : Color::Rgb(112, 48, 160); break;
                 case syntax::Role::Comment: color = model.dark ? Color::Rgb(145, 165, 144) : Color::Rgb(66, 112, 62); break;
                 case syntax::Role::String: color = model.dark ? Color::Rgb(226, 176, 139) : Color::Rgb(151, 64, 29); break;
+                case syntax::Role::Emphasis: color = model.dark ? Color::Rgb(228, 185, 243) : Color::Rgb(132, 53, 148); break;
+                case syntax::Role::Code: color = model.dark ? Color::Rgb(226, 176, 139) : Color::Rgb(151, 64, 29); break;
                 case syntax::Role::Number: color = model.dark ? Color::Rgb(151, 210, 188) : Color::Rgb(26, 112, 91); break;
+                case syntax::Role::Key:
+                case syntax::Role::Link:
+                case syntax::Role::Heading:
+                case syntax::Role::Marker:
                 case syntax::Role::Directive: color = model.dark ? Color::Rgb(127, 188, 240) : Color::Rgb(33, 98, 161); break;
                 }
                 ranges.push_back({{offset, end}, {.foreground = color}});
@@ -349,6 +355,7 @@ void EditorState::refresh() { impl_->refresh_(); }
 void EditorState::undo() { impl_->application->execute({{"command", "document.undo"}, {"params", {{"document", impl_->document}, {"revision", impl_->documentRevision}}}}); impl_->refresh_(); if (impl_->changed) impl_->changed(); }
 void EditorState::redo() { impl_->application->execute({{"command", "document.redo"}, {"params", {{"document", impl_->document}, {"revision", impl_->documentRevision}}}}); impl_->refresh_(); if (impl_->changed) impl_->changed(); }
 void EditorState::insert(std::string text) { auto next = impl_->value; impl_->replace_(next, next.selection.Range(), text); impl_->publish_(next); }
+std::string EditorState::language_id() const { return std::string(syntax::language_name(impl_->language)); }
 bool EditorState::highlighting_limited() const { return impl_->syntaxCache.limited(); }
 std::string EditorState::document_id() const { return impl_->document; }
 TextSelection EditorState::selection() const { return impl_->value.selection; }

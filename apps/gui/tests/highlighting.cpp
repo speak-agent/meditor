@@ -47,6 +47,32 @@ int main() {
         // Attributes must not alter source text or turn selection into a text edit.
         require(core->execute({{"command", "document.read"}, {"params", {{"document", id}}}})["data"]["text"] == source);
     }
+    struct Sample { std::string path, text, role; int start, end; };
+    for (const auto& sample : std::vector<Sample>{
+        {"README.md", "# 标题 🙂\n```cpp\nexport module example;\n```", "heading", 0, 7},
+        {"settings.json", R"({"键": "🙂", "active": true})", "key", 1, 4},
+        {"mcpp.toml", "title = \"你好🙂\" # comment", "key", 0, 5},
+    }) {
+        auto reply = core->execute({{"command", "document.open"}, {"params", {{"path", sample.path}, {"create", true}}}});
+        auto sampleId = reply["data"]["document"].get<std::string>();
+        gEditor = std::make_shared<meditor::ui::EditorState>(core, sampleId, [] {}); gEditor->insert(sample.text);
+        const auto highlighted = core->execute({{"command", "document.highlight"}, {"params", {{"document", sampleId}}}});
+        require(highlighted["data"]["tokens"][0]["role"] == sample.role);
+        require(gEditor->language_id() == highlighted["data"]["language"].get<std::string>());
+        for (bool dark : {true, false}) for (auto viewport : {Size{390, 844}, Size{1200, 800}}) {
+            gDark = dark; huxerui::Application application(editor_view, {.show_debug_overlay = false});
+            UiTest ui(application, {.viewport = viewport});
+            const auto snapshot = ui.CaptureSnapshot().ToString(); auto begin = snapshot.find("styles {");
+            require(begin != snapshot.npos); begin = snapshot.find("style {", begin);
+            auto firstStyle = snapshot.substr(begin, snapshot.find("style {", begin + 7) - begin);
+            require(firstStyle.find("start=" + std::to_string(sample.start)) != firstStyle.npos);
+            require(firstStyle.find("end=" + std::to_string(sample.end)) != firstStyle.npos);
+            ui.Find(UiSelector::Key("code-editor")).Tap(); ui.PressKey(Key::A, {.control = true});
+            ui.PressKey(Key::Backspace); require(ui.ActiveTextInput().has_value());
+            gEditor->undo(); ui.Pump();
+            require(core->execute({{"command", "document.read"}, {"params", {{"document", sampleId}}}})["data"]["text"] == sample.text);
+        }
+    }
     // Long-line fallback state is available to the workbench without mutating text.
     core->execute({{"command", "document.edit"}, {"params", {{"document", id}, {"revision", 2}, {"edits", meditor::Json::array({{{"start", 0}, {"end", source.size()}, {"text", std::string(16385, 'x')}}})}}}});
     state->refresh(); require(state->highlighting_limited());
@@ -60,5 +86,5 @@ int main() {
     ui.Find(UiSelector::Key("explorer-toggle")).Tap();
     require(ui.Find(UiSelector::Key("highlight-limited")).One().in_viewport);
     require(ui.Find(UiSelector::Key("code-editor")).One().in_viewport);
-    std::println("Attributed C++ paint, dark/light palettes and Unicode selection at two sizes: passed");
+    std::println("Attributed syntax paint, dark/light palettes and Unicode selection at two sizes: passed");
 }

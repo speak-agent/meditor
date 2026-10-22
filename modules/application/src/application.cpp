@@ -272,17 +272,16 @@ struct Application::Impl {
                 }
                 const auto language = syntax::detect(record.path); syntax::Cache cache; cache.update(lines, language);
                 Json tokens = Json::array(); bool truncated {}; std::size_t processed {};
-                static constexpr std::string_view ROLES[] {"keyword", "comment", "string", "number", "directive"};
                 auto first = std::min(static_cast<std::uint64_t>(start), static_cast<std::uint64_t>(lines.size()));
                 for (auto row = first; row < lines.size() && row - first < static_cast<std::uint64_t>(count); ++row) {
                     for (auto token : cache.tokens(row)) {
                         if (tokens.size() == 4096) { truncated = true; break; }
-                        tokens.push_back({{"line", row}, {"start", token.start}, {"end", token.end}, {"role", ROLES[static_cast<std::size_t>(token.role)]}});
+                        tokens.push_back({{"line", row}, {"start", token.start}, {"end", token.end}, {"role", syntax::role_name(token.role)}});
                     }
                     if (truncated) break;
                     ++processed;
                 }
-                return {{"document", id}, {"revision", record.document.revision()}, {"language", language == syntax::Language::Cpp ? "cpp" : "plain"}, {"layer", "lexical"}, {"offsetEncoding", "utf-8-bytes-per-line"}, {"limited", cache.limited()}, {"truncated", truncated}, {"startLine", first}, {"completeLines", processed}, {"totalLines", lines.size()}, {"tokens", tokens}};
+                return {{"document", id}, {"revision", record.document.revision()}, {"language", syntax::language_name(language)}, {"layer", "lexical"}, {"offsetEncoding", "utf-8-bytes-per-line"}, {"limited", cache.limited()}, {"truncated", truncated}, {"startLine", first}, {"completeLines", processed}, {"totalLines", lines.size()}, {"tokens", tokens}};
             }
             auto revision = params.at("revision").get<std::uint64_t>();
             if (record.document.revision() != revision) throw CommandError("revision-conflict", "Document changed; read the current revision before editing");

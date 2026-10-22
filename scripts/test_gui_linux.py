@@ -38,6 +38,8 @@ def main():
     parser.add_argument("--binary", type=Path)
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--language", choices=["en", "zh"], default="en")
+    parser.add_argument("--syntax", choices=["cpp", "markdown", "json", "toml"], default="cpp")
+    parser.add_argument("--theme", choices=["dark", "light"], default="dark")
     args = parser.parse_args()
     if args.binary:
         binary = args.binary.resolve()
@@ -95,12 +97,18 @@ def main():
         raise SystemExit("An X11 display is required")
     with tempfile.TemporaryDirectory(prefix="meditor-gui-test-") as folder:
         root = Path(folder)
-        source = root / "main.cppm"
-        original = "export module demo;\nexport int value() { return 42; }\n"
+        samples = {
+            "cpp": ("main.cppm", "export module demo;\nexport int value() { return 42; }\n"),
+            "markdown": ("README.md", "# Modern Modules\n\n- **Build** your first module with `import std`.\n- [Local guide](docs/guide.md)\n\n```cpp\nexport module hello;\nexport int answer() { return 42; }\n```\n"),
+            "json": ("example.json", '{\n  "message": "Hello Modules",\n  "active": true,\n  "count": 42\n}\n'),
+            "toml": ("mcpp.toml", '[package]\nname = "hello-modules"\nversion = "0.1.0"\n\n# Modules project\n[dependencies]\njson = "3.12.0"\n'),
+        }
+        filename, original = samples[args.syntax]
+        source = root / filename
         source.write_bytes(original.encode())
-        (root / "settings.json").write_text(json.dumps({"schemaVersion": 1, "revision": 1, "values": {"theme": "dark", "reducedMotion": False, "language": args.language}}), encoding="utf-8")
+        (root / "settings.json").write_text(json.dumps({"schemaVersion": 1, "revision": 1, "values": {"theme": args.theme, "reducedMotion": False, "language": args.language}}), encoding="utf-8")
         environment = os.environ.copy(); environment.update(GDK_BACKEND="x11", GSK_RENDERER="cairo")
-        process = subprocess.Popen([str(binary), "--workspace", str(root), "--open", "main.cppm", "--settings-file", str(root / "settings.json"), "--data-root", str(root / "runtime")], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        process = subprocess.Popen([str(binary), "--workspace", str(root), "--open", filename, "--settings-file", str(root / "settings.json"), "--data-root", str(root / "runtime")], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         window = None
         pressed = set()
         try:

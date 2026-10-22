@@ -4,8 +4,8 @@ export module meditor.syntax;
 import std;
 
 export namespace meditor::syntax {
-enum class Language { Plain, Cpp };
-enum class Role { Keyword, Comment, String, Number, Directive };
+enum class Language { Plain, Cpp, Markdown, Json, Jsonc, Toml };
+enum class Role { Keyword, Comment, String, Number, Directive, Key, Heading, Emphasis, Link, Code, Marker };
 // Byte ranges in a single UTF-8 line. Text is never modified by highlighting.
 struct Token {
     std::size_t start {}, end {};
@@ -13,17 +13,25 @@ struct Token {
     bool operator==(const Token&) const = default;
 };
 struct State {
-    enum class Mode { Normal, Comment, Raw, String, Character, LineComment };
+    enum class Mode { Normal, Comment, Raw, String, Character, LineComment, BasicMulti, LiteralMulti };
     Mode mode {Mode::Normal};
     std::string rawEnd;
+    char fence {};
+    std::size_t fenceLength {}, fenceIndent {};
+    Language fenceLanguage {Language::Plain};
+    Mode embeddedMode {Mode::Normal};
+    std::string embeddedRawEnd;
     bool operator==(const State&) const = default;
 };
 struct Line {
     std::string text;
     State before, after;
     std::vector<Token> tokens;
+    bool limited {};
 };
 Language detect(std::string_view fileName);
+std::string_view language_name(Language language);
+std::string_view role_name(Role role);
 // Incremental at line boundaries; unchanged text/state reuses the previous result.
 // Above the byte budget, every line remains plain (limited() is true).
 class Cache {
@@ -38,4 +46,10 @@ public:
     std::span<const Token> tokens(std::size_t line) const;
     bool limited() const noexcept;
 };
+}
+
+namespace meditor::syntax::detail {
+void scan_cpp(Line& line);
+void scan_config(Line& line, Language language);
+void scan_markdown(Line& line);
 }

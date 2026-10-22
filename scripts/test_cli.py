@@ -103,6 +103,14 @@ def main():
         source = project / "hello.cppm"
         original = "export module hello;\nexport int value() { return 42; }\n你好🙂\r\n"
         source.write_bytes(original.encode())
+        syntax_samples = {
+            "README.md": ("# 标题 🙂\n```cpp\nexport module example;\n```\n", "markdown", "heading"),
+            "example.json": ('{"键": "🙂", "active": true}', "json", "key"),
+            "example.jsonc": ('/* comment */ {"key": true}', "jsonc", "comment"),
+            "mcpp.toml": ('[package]\nname = "example"\n', "toml", "key"),
+        }
+        for filename, (text, _, _) in syntax_samples.items():
+            (project / filename).write_bytes(text.encode())
         for name in ["mcpp", "mcppls"]:
             target = tools / name / "bin" / (name + (".exe" if os.name == "nt" else ""))
             target.parent.mkdir(parents=True)
@@ -172,6 +180,11 @@ def main():
             document = request("document.open", {"path": "hello.cppm"})
             doc = document["document"]
             assert request("document.read", {"document": doc})["text"] == original
+            for filename, (_, language, role) in syntax_samples.items():
+                sample_id = request("document.open", {"path": filename})["document"]
+                result = request("document.highlight", {"document": sample_id})
+                assert result["language"] == language and result["tokens"][0]["role"] == role
+                assert result["revision"] == 1 and not result["limited"]
             highlighted = request("document.highlight", {"document": doc})
             assert highlighted["revision"] == 1 and highlighted["language"] == "cpp"
             assert highlighted["layer"] == "lexical" and highlighted["offsetEncoding"] == "utf-8-bytes-per-line"
