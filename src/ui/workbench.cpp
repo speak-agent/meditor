@@ -186,7 +186,14 @@ struct WorkspaceModel {
         } catch (const std::exception&) { session.reset(); }
         busy = false; activeTask.clear(); taskKind.clear(); output.clear(); bottomPanel.clear(); searchOpen = false;
         searchTotal = 0; searchReplaced.reset(); searchErrorKey.clear();
-        notice("status.workspaceOpened"); return true;
+        notice("status.workspaceOpened");
+        auto state = application->execute({{"command", "workspace.status"}});
+        if (state.value("ok", false)) {
+            const auto& recovery = state["data"]["recovery"];
+            if (!recovery["recovered"].empty()) notice("status.recoveredDocuments");
+            else if (!recovery["conflicts"].empty()) notice("status.recoveryConflicts");
+        }
+        return true;
     }
 };
 }

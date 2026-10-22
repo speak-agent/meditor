@@ -134,6 +134,8 @@
   "status.taskFinished": "任务已结束",
   "status.taskRunning": "任务运行中",
   "status.workspaceOpened": "工作区已打开 · 执行工具前需要信任",
+  "status.recoveredDocuments": "已恢复未保存的文档——请检查未保存标签页",
+  "status.recoveryConflicts": "检测到外部修改，已保留两份副本",
   "task.closeOutput": "关闭",
   "task.output": "输出",
   "task.waitingOutput": "正在等待工具输出…",

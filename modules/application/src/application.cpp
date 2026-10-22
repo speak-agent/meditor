@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Sunrisepeak & mcpp-community
 module meditor.application;
 import std;
+import meditor.recovery;
 import nlohmann.json;
 import meditor.document;
 import meditor.syntax;
@@ -260,6 +261,7 @@ struct Record {
     bool existed {};
     std::uint64_t synced {};
     int lspVersion {};
+    std::string recoveryBase;
     Record(std::string name, std::string text, bool exists) : path(std::move(name)), document(std::move(text)), format(inspect_text_format(document.text())), existed(exists) {}
 };
 }
@@ -277,6 +279,8 @@ struct Application::Impl {
     std::shared_ptr<QueryBudget> queryBudget {std::make_shared<QueryBudget>()};
     std::map<std::string, std::unique_ptr<LanguageQuery>> queries;
     std::unique_ptr<SettingsStore> settings;
+    std::unique_ptr<RecoveryStore> recovery;
+    std::vector<std::string> recoveredDocuments, recoveryConflicts;
     RuntimeDirectories runtime;
     bool trusted {};
     std::uint64_t workspaceGeneration {1};
@@ -315,6 +319,7 @@ struct Application::Impl {
         if (!exists && !params.value("create", false)) throw CommandError("not-found", "File does not exist");
         auto id = "d" + std::to_string(nextDocument++);
         auto record = std::make_unique<Record>(name, exists ? read_file(path, MAX_DOCUMENT_BYTES) : std::string(), exists);
+        record->recoveryBase = recovery_digest(record->document.text());
         auto result = summary(id, *record); documents.emplace(id, std::move(record)); return result;
     }
     void require_trust() const { if (!trusted) throw CommandError("workspace-untrusted", "Explicitly trust this workspace before executing tools"); }
@@ -610,7 +615,9 @@ struct Application::Impl {
         }
         if (command == "workspace.status") {
             Json docs = Json::array(); for (const auto& [id, record] : documents) docs.push_back(summary(id, *record));
-            return {{"name", path_to_utf8(root.filename())}, {"generation", workspaceGeneration}, {"trusted", trusted}, {"documents", docs}, {"language", language_state()}};
+            Json recovered = Json::array(); for (const auto& path : recoveredDocuments) recovered.push_back(path);
+            Json conflicts = Json::array(); for (const auto& path : recoveryConflicts) conflicts.push_back(path);
+            return {{"name", path_to_utf8(root.filename())}, {"generation", workspaceGeneration}, {"trusted", trusted}, {"documents", docs}, {"language", language_state()}, {"recovery", {{"recovered", recovered}, {"conflicts", conflicts}}}};
         }
         if (command == "workspace.trust") { trusted = params.at("allow").get<bool>(); if (!trusted) { for (auto& [id, task] : tasks) task->worker.request_stop(); stop_language(); for (auto& [id, record] : documents) record->synced = 0; } return {{"trusted", trusted}}; }
         if (command == "workspace.files") return workspace_files(root);
@@ -718,6 +725,8 @@ struct Application::Impl {
                 auto path = resolve(record.path);
                 if (record.existed != std::filesystem::exists(path) || (record.existed && read_file(path, MAX_DOCUMENT_BYTES) != record.document.saved_text())) throw CommandError("disk-conflict", "The file changed on disk; preserve both versions before saving");
                 auto text = record.document.text(); write_file_atomic(path, text); record.document.mark_saved(text); record.existed = true;
+                record.recoveryBase = recovery_digest(text);
+                if (recovery) recovery->discard(record.path);
                 saveNotification = {{"state", (language || startup) ? "not-open" : "not-running"}};
                 if (language) {
                     try {
@@ -730,6 +739,10 @@ struct Application::Impl {
                 }
             } else throw CommandError("unknown-command", "Unknown document command");
             record.refresh_format();
+            if (recovery) {
+                if (record.document.dirty()) recovery->remember(record.path, record.document.text(), record.document.revision(), record.recoveryBase);
+                else recovery->discard(record.path);
+            }
             auto result = summary(id, record); if (!saveNotification.is_null()) result["languageSaveNotification"] = saveNotification; return result;
         }
         if (command == "doctor") {
@@ -798,6 +811,24 @@ Application::Application(std::filesystem::path workspace, std::filesystem::path 
             throw std::runtime_error("Portable settings must stay within the application data directory");
     }
     impl_->settings = std::make_unique<SettingsStore>(std::move(settingsFile));
+    impl_->recovery = std::make_unique<RecoveryStore>(impl_->runtime.dataRoot, impl_->root);
+    auto report = impl_->recovery->collect([&](const std::filesystem::path& path) {
+        try { return recovery_digest(read_file(impl_->root / path, MAX_DOCUMENT_BYTES)); }
+        catch (...) { return recovery_digest(std::string()); }
+    });
+    for (auto& entry : report.recoverable) {
+        try {
+            const auto path = impl_->resolve(entry.documentPath);
+            const bool exists = std::filesystem::exists(path);
+            auto record = std::make_unique<Record>(entry.documentPath, exists ? read_file(path, MAX_DOCUMENT_BYTES) : std::string(), exists);
+            record->recoveryBase = entry.baseDigest;
+            record->document.apply({{0, record->document.size(), entry.text}}, record->document.revision());
+            record->refresh_format();
+            impl_->documents.emplace("d" + std::to_string(impl_->nextDocument++), std::move(record));
+            impl_->recoveredDocuments.push_back(entry.documentPath);
+        } catch (...) { impl_->recoveryConflicts.push_back(entry.documentPath); }
+    }
+    for (auto& entry : report.conflicted) impl_->recoveryConflicts.push_back(entry.documentPath);
 }
 Application::~Application() = default;
 std::string Application::session_id() const { return impl_->session; }

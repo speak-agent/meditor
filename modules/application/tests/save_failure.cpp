@@ -30,7 +30,8 @@ int main() {
     auto buffer = call("document.read", {{"document", id}})["data"];
     require(buffer["text"] == "changed" && buffer["revision"] == 2 && buffer["dirty"].get<bool>());
     require(meditor::read_file(file) == "original" && std::filesystem::last_write_time(file) == stamp);
-    require(std::distance(std::filesystem::directory_iterator(root), std::filesystem::directory_iterator{}) == 1);
+    std::set<std::string> workspaceEntries; for (const auto& item : std::filesystem::directory_iterator(root)) workspaceEntries.insert(meditor::path_to_utf8(item.path().filename()));
+    require(workspaceEntries == std::set<std::string>{"main.cppm", "runtime"}); // No leaked save temporaries; runtime/ is the explicit data root.
     std::filesystem::permissions(file, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
     require(call("document.save", {{"document", id}, {"revision", 2}})["ok"].get<bool>());
     require(meditor::read_file(file) == "changed" && call("document.read", {{"document", id}})["data"]["dirty"] == false);
