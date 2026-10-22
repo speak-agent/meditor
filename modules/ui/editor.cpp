@@ -4,6 +4,7 @@ module meditor.ui.editor;
 import std;
 import huxerui;
 import meditor.application;
+import meditor.syntax;
 
 namespace meditor::ui {
 using namespace huxerui;
@@ -40,6 +41,8 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     float lineHeight {24}, ascent {18};
     std::size_t topLine {};
     bool dark {true};
+    syntax::Language language {syntax::Language::Plain};
+    syntax::Cache syntaxCache;
     bool revealCaret {true};
     void rebuild_() {
         auto oldLines = std::move(lines);
@@ -52,6 +55,9 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
             if (end == std::string::npos) break;
             unit += units(std::string_view(value.text).substr(byte, end - byte + 1)); byte = end + 1;
         }
+        std::vector<std::string_view> sourceLines; sourceLines.reserve(lines.size());
+        for (const auto& line : lines) sourceLines.push_back(line.text);
+        syntaxCache.update(sourceLines, language);
         positions.resize(lines.size());
         for (std::size_t i = 0; i < lines.size() && i < oldLines.size(); ++i)
             if (lines[i].text == oldLines[i].text) positions[i] = std::move(oldPositions[i]);
@@ -61,12 +67,14 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         if (!response.value("ok", false)) return;
         auto data = response.at("data"); auto revision = data.at("revision").get<std::uint64_t>();
         if (revision == documentRevision) return;
+        language = syntax::detect(data.at("path").get<std::string>());
         value.text = data.at("text").get<std::string>(); documentRevision = revision;
         auto length = units(value.text); value.selection.anchor = std::min(value.selection.anchor, length); value.selection.active = std::min(value.selection.active, length);
         ++input.revision; ++input.content_revision; rebuild_();
     }
     bool publish_(const TextEditingValue& next, const std::string& historyGroup = {}) {
-        if (next.text != value.text) {
+        const bool contentChanged = next.text != value.text;
+        if (contentChanged) {
             std::size_t prefix {}, suffix {};
             while (prefix < value.text.size() && prefix < next.text.size() && value.text[prefix] == next.text[prefix]) ++prefix;
             while (prefix && prefix < value.text.size() && (static_cast<unsigned char>(value.text[prefix]) & 0xc0) == 0x80) --prefix;
@@ -77,7 +85,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
             documentRevision = reply["data"]["revision"]; ++input.content_revision;
         }
         revealCaret = revealCaret || next.text != value.text || next.selection != value.selection;
-        value = next; ++input.revision; rebuild_();
+        value = next; ++input.revision; if (contentChanged) rebuild_();
         if (changed) changed();
         return true;
     }
@@ -304,15 +312,33 @@ public:
     void PaintAboveContent(const ViewNode&, PaintContext& context) const override {
         const auto& model = *model_; auto visible = static_cast<std::size_t>(std::max(1.0F, std::ceil(model.viewport.height / model.lineHeight)));
         auto last = std::min(model.lines.size(), model.topLine + visible);
-        context.DrawRect({0, 0, model.viewport.width, model.viewport.height}, Color::Rgb(19, 24, 34));
-        context.DrawRect({0, 0, 50, model.viewport.height}, Color::Rgb(16, 21, 30));
+        context.DrawRect({0, 0, model.viewport.width, model.viewport.height}, model.dark ? Color::Rgb(19, 24, 34) : Color::Rgb(250, 252, 255));
+        context.DrawRect({0, 0, 50, model.viewport.height}, model.dark ? Color::Rgb(16, 21, 30) : Color::Rgb(238, 242, 248));
         auto geometry = model.QueryTextInputGeometry(model.input.session_id, model.value.selection.Range());
-        for (auto rectangle : geometry.range_rects) context.DrawRect(rectangle, Color::Rgb(42, 67, 105));
-        TextStyle style {.font = Font::Monospace(14), .foreground = Color::Rgb(213, 221, 233)};
+        for (auto rectangle : geometry.range_rects) context.DrawRect(rectangle, model.dark ? Color::Rgb(42, 67, 105) : Color::Rgb(204, 224, 250));
+        TextStyle style {.font = Font::Monospace(14), .foreground = model.dark ? Color::Rgb(213, 221, 233) : Color::Rgb(35, 47, 65)};
         for (auto i = model.topLine; i < last; ++i) {
             auto y = 10 + (i - model.topLine) * model.lineHeight;
             context.DrawText({8, static_cast<float>(y), 38, model.lineHeight}, std::to_string(i + 1), {.font = Font::Monospace(12), .foreground = Color::Rgb(100, 115, 137)});
-            context.DrawText({64, static_cast<float>(y), std::max(0.0F, model.viewport.width - 72), model.lineHeight}, model.lines[i].text, style);
+            const auto& text = model.lines[i].text;
+            std::vector<TextStyleRange> ranges;
+            std::size_t byte {}; TextOffset offset {};
+            for (const auto& token : model.syntaxCache.tokens(i)) {
+                offset += units(std::string_view(text).substr(byte, token.start - byte));
+                auto end = offset + units(std::string_view(text).substr(token.start, token.end - token.start));
+                Color color;
+                switch (token.role) {
+                case syntax::Role::Keyword: color = model.dark ? Color::Rgb(197, 157, 255) : Color::Rgb(112, 48, 160); break;
+                case syntax::Role::Comment: color = model.dark ? Color::Rgb(145, 165, 144) : Color::Rgb(66, 112, 62); break;
+                case syntax::Role::String: color = model.dark ? Color::Rgb(226, 176, 139) : Color::Rgb(151, 64, 29); break;
+                case syntax::Role::Number: color = model.dark ? Color::Rgb(151, 210, 188) : Color::Rgb(26, 112, 91); break;
+                case syntax::Role::Directive: color = model.dark ? Color::Rgb(127, 188, 240) : Color::Rgb(33, 98, 161); break;
+                }
+                ranges.push_back({{offset, end}, {.foreground = color}});
+                offset = end; byte = token.end;
+            }
+            // One attributed paragraph preserves shaping, selection and UTF-16 geometry.
+            context.DrawText({64, static_cast<float>(y), std::max(0.0F, model.viewport.width - 72), model.lineHeight}, AttributedText::FromRanges(text, std::move(ranges)), style);
         }
         if (focused_) context.DrawRect(geometry.caret, Color::Rgb(112, 171, 255));
     }
@@ -323,10 +349,12 @@ void EditorState::refresh() { impl_->refresh_(); }
 void EditorState::undo() { impl_->application->execute({{"command", "document.undo"}, {"params", {{"document", impl_->document}, {"revision", impl_->documentRevision}}}}); impl_->refresh_(); if (impl_->changed) impl_->changed(); }
 void EditorState::redo() { impl_->application->execute({{"command", "document.redo"}, {"params", {{"document", impl_->document}, {"revision", impl_->documentRevision}}}}); impl_->refresh_(); if (impl_->changed) impl_->changed(); }
 void EditorState::insert(std::string text) { auto next = impl_->value; impl_->replace_(next, next.selection.Range(), text); impl_->publish_(next); }
+bool EditorState::highlighting_limited() const { return impl_->syntaxCache.limited(); }
 std::string EditorState::document_id() const { return impl_->document; }
 TextSelection EditorState::selection() const { return impl_->value.selection; }
 std::shared_ptr<TextInputClient> EditorState::text_input_client() const { return impl_; }
-View code_editor(std::shared_ptr<EditorState> state) {
+View code_editor(std::shared_ptr<EditorState> state, bool dark) {
+    state->impl_->dark = dark;
     return Canvas([](PaintContext&, Size) {}).Key("code-editor").With(Grow{1}, Frame{.min_width = 120, .min_height = 160}, Focusable{}, PointerCursor{PointerCursorKind::Text}, ClipChildren{}, EditorSurface{state->impl_})
         .On<ViewEvents::ScrollInput>([state](const ScrollInputEvent& event) {
             auto& model = *state->impl_;

@@ -4,6 +4,7 @@ module meditor.application;
 import std;
 import nlohmann.json;
 import meditor.document;
+import meditor.syntax;
 import meditor.platform;
 import meditor.settings;
 import meditor.about;
@@ -260,6 +261,29 @@ struct Application::Impl {
         if (command.starts_with("document.")) {
             auto& record = this->record(params); auto id = params.at("document").get<std::string>();
             if (command == "document.read") return summary(id, record, true);
+            if (command == "document.highlight") {
+                const auto start = params.value("startLine", 0LL), count = params.value("maxLines", 100LL);
+                if (start < 0 || count < 1 || count > 1000) throw CommandError("invalid-params", "Invalid highlight line range");
+                const auto text = record.document.text(); std::vector<std::string_view> lines;
+                for (std::size_t byte = 0;;) {
+                    auto end = text.find('\n', byte); auto length = end == text.npos ? text.size() - byte : end - byte;
+                    auto line = std::string_view(text).substr(byte, length); if (line.ends_with('\r')) line.remove_suffix(1);
+                    lines.push_back(line); if (end == text.npos) break; byte = end + 1;
+                }
+                const auto language = syntax::detect(record.path); syntax::Cache cache; cache.update(lines, language);
+                Json tokens = Json::array(); bool truncated {}; std::size_t processed {};
+                static constexpr std::string_view ROLES[] {"keyword", "comment", "string", "number", "directive"};
+                auto first = std::min(static_cast<std::uint64_t>(start), static_cast<std::uint64_t>(lines.size()));
+                for (auto row = first; row < lines.size() && row - first < static_cast<std::uint64_t>(count); ++row) {
+                    for (auto token : cache.tokens(row)) {
+                        if (tokens.size() == 4096) { truncated = true; break; }
+                        tokens.push_back({{"line", row}, {"start", token.start}, {"end", token.end}, {"role", ROLES[static_cast<std::size_t>(token.role)]}});
+                    }
+                    if (truncated) break;
+                    ++processed;
+                }
+                return {{"document", id}, {"revision", record.document.revision()}, {"language", language == syntax::Language::Cpp ? "cpp" : "plain"}, {"layer", "lexical"}, {"offsetEncoding", "utf-8-bytes-per-line"}, {"limited", cache.limited()}, {"truncated", truncated}, {"startLine", first}, {"completeLines", processed}, {"totalLines", lines.size()}, {"tokens", tokens}};
+            }
             auto revision = params.at("revision").get<std::uint64_t>();
             if (record.document.revision() != revision) throw CommandError("revision-conflict", "Document changed; read the current revision before editing");
             if (command == "document.edit") {
@@ -354,7 +378,7 @@ Application::~Application() = default;
 std::string Application::session_id() const { return impl_->session; }
 Json Application::capabilities() const {
     Json commands = Json::array();
-    for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.files", "workspace.trust", "document.open", "document.read", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
+    for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.files", "workspace.trust", "document.open", "document.read", "document.highlight", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
     commands.push_back("settings.get"); commands.push_back("settings.update");
     Json schemas = Json::object();
     for (const auto& name : commands) {
@@ -367,6 +391,7 @@ Json Application::capabilities() const {
             if (command != "language.stop" && command != "language.diagnostics") field("document", "string", true);
             if (command == "document.edit" || command == "document.undo" || command == "document.redo" || command == "document.save") field("revision", "integer", true);
             if (command == "document.edit") { field("edits", "array", true); field("historyGroup", "string"); }
+            if (command == "document.highlight") { field("startLine", "integer"); field("maxLines", "integer"); }
             if (command == "modules.info") field("name", "string", true);
             if (command == "language.completion" || command == "language.hover" || command == "language.definition" || command == "language.references" || command == "language.signature") field("position", "object", true);
         } else if (command.starts_with("task.")) { field("task", "string", true); field("timeoutMs", "integer"); }

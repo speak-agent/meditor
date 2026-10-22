@@ -172,6 +172,24 @@ def main():
             document = request("document.open", {"path": "hello.cppm"})
             doc = document["document"]
             assert request("document.read", {"document": doc})["text"] == original
+            highlighted = request("document.highlight", {"document": doc})
+            assert highlighted["revision"] == 1 and highlighted["language"] == "cpp"
+            assert highlighted["layer"] == "lexical" and highlighted["offsetEncoding"] == "utf-8-bytes-per-line"
+            assert highlighted["tokens"][0] == {"line": 0, "start": 0, "end": 6, "role": "keyword"}
+            assert request("document.highlight", {"document": doc, "startLine": -1}, ok=False)["code"] == "invalid-params"
+            assert request("document.highlight", {"document": doc, "maxLines": 1001}, ok=False)["code"] == "invalid-params"
+            highlight_doc = request("document.open", {"path": "highlight.cppm", "create": True})["document"]
+            request("document.edit", {"document": highlight_doc, "revision": 1, "edits": [{"start": 0, "end": 0, "text": "int " * 3000 + "\n" + "int " * 3000}]})
+            bounded = request("document.highlight", {"document": highlight_doc})
+            assert bounded["truncated"] and not bounded["limited"] and len(bounded["tokens"]) == 4096
+            assert bounded["completeLines"] == 1 and bounded["revision"] == 2
+            assert len(request("document.highlight", {"document": highlight_doc, "startLine": 1, "maxLines": 1})["tokens"]) == 3000
+            request("document.edit", {"document": highlight_doc, "revision": 2, "edits": [{"start": 0, "end": 24001, "text": "x" * 16385}]})
+            bounded = request("document.highlight", {"document": highlight_doc})
+            assert bounded["limited"] and not bounded["truncated"] and not bounded["tokens"]
+            request("document.undo", {"document": highlight_doc, "revision": 3})
+            assert not request("document.undo", {"document": highlight_doc, "revision": 4})["dirty"]
+
             assert request("build", ok=False)["code"] == "workspace-untrusted"
             edited = request("document.edit", {"document": doc, "revision": 1, "edits": [{"start": 0, "end": 6, "text": "import"}]})
             assert edited["revision"] == 2 and edited["dirty"]

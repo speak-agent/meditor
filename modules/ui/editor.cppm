@@ -11,7 +11,7 @@ public:
     struct Impl;
 private:
     std::shared_ptr<Impl> impl_;
-    friend huxerui::View code_editor(std::shared_ptr<EditorState> state);
+    friend huxerui::View code_editor(std::shared_ptr<EditorState> state, bool dark);
 public:
     EditorState(std::shared_ptr<Application> application, std::string document, std::function<void()> changed);
     void refresh();
@@ -19,8 +19,9 @@ public:
     void redo();
     void insert(std::string text);
     std::string document_id() const;
+    bool highlighting_limited() const;
     huxerui::TextSelection selection() const;
     std::shared_ptr<huxerui::TextInputClient> text_input_client() const;
 };
-huxerui::View code_editor(std::shared_ptr<EditorState> state);
+huxerui::View code_editor(std::shared_ptr<EditorState> state, bool dark = true);
 }

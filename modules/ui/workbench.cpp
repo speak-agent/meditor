@@ -251,7 +251,7 @@ View workbench() {
                 Text(t("workspace.chooseFile"), TextRole::Title),
                 Text(t("workspace.ready")).With(Foreground(muted)),
             }.With(Grow{1}, Padding(32), Spacing(16), MainAlign(MainAxisAlignment::Center));
-            if (!data->active.empty()) editor = code_editor(data->editors.at(data->active));
+            if (!data->active.empty()) editor = code_editor(data->editors.at(data->active), data->dark);
             auto tabs = Flow {ForEach(data->tabs, [data, run, refresh, pane, t](const std::string& id) {
                 auto record = data->application->execute({{"command", "document.read"}, {"params", {{"document", id}}}})["data"];
                 auto name = std::filesystem::path(record.value("path", t("workspace.untitled"))).filename().string();
@@ -267,7 +267,9 @@ View workbench() {
                 Button(t("action.test")).Key("action-test").With(Enabled(!data->busy)).OnClick([executeTask] { executeTask("test"); }),
                 Button(t("action.trust")).Key("action-trust").OnClick([run] { run("workspace.trust", {{"allow", true}}); }),
             }.With(Padding(8), Spacing(6));
-            auto center = Column {toolbar, tabs, std::move(editor),
+            auto center = Column {toolbar, tabs,
+                !data->active.empty() && data->editors.at(data->active)->highlighting_limited() ? View(Text(t("editor.highlightLimited"), TextRole::Label).Key("highlight-limited").With(Padding(8))) : View{},
+                std::move(editor),
                 data->output.empty() ? View{} : View(ScrollView {SelectionArea {Text(data->output).Style({.font = Font::Monospace(12)})}}.With(Frame{.height = 160}, Padding(12), Background(pane)))
             }.Key("workspace-editor-pane").With(Grow{1}, CrossAlign(CrossAxisAlignment::Stretch));
             body = Row {data->navigation ? View(sidebar) : View{}, (!compact || !data->navigation) ? View(center) : View{}}.With(Grow{1}, CrossAlign(CrossAxisAlignment::Stretch));
