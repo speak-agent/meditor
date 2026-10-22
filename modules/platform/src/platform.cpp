@@ -194,25 +194,57 @@ void Process::start(const std::vector<std::string>& args, const std::filesystem:
     impl_->input = input[1]; impl_->output = output[0];
     fcntl(impl_->input, F_SETFD, FD_CLOEXEC); fcntl(impl_->output, F_SETFD, FD_CLOEXEC);
     fcntl(impl_->output, F_SETFL, fcntl(impl_->output, F_GETFL) | O_NONBLOCK);
+    if (fcntl(impl_->input, F_SETFL, fcntl(impl_->input, F_GETFL) | O_NONBLOCK) < 0) { terminate(); throw std::runtime_error("Could not configure process input"); }
 #endif
 }
-void Process::write(std::string_view data) {
+void Process::write(std::string_view data, std::chrono::milliseconds timeout, std::stop_token stop) {
+    if (timeout <= std::chrono::milliseconds::zero()) throw std::invalid_argument("Process write timeout must be positive");
 #if defined(__EMSCRIPTEN__)
     throw std::runtime_error("Tool processes unavailable");
 #else
-    while (!data.empty()) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    try {
 #if defined(_WIN32)
-        DWORD sent {}; if (!impl_->input || !WriteFile(impl_->input, data.data(), static_cast<DWORD>(std::min<std::size_t>(data.size(), 65536)), &sent, nullptr) || !sent) throw std::runtime_error("Tool input closed");
-#else
-        if (impl_->input < 0) throw std::runtime_error("Tool input closed");
-        // Ignore SIGPIPE so a dead language server cannot terminate the editor.
-        signal(SIGPIPE, SIG_IGN);
-        auto sent = ::write(impl_->input, data.data(), data.size());
-        if (sent < 0 && errno == EINTR) continue;
-        if (sent <= 0) throw std::runtime_error("Tool input closed");
+        struct ThreadHandle { HANDLE handle {}; ~ThreadHandle() { if (handle) CloseHandle(handle); } } thread;
+        if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &thread.handle, 0, FALSE, DUPLICATE_SAME_ACCESS))
+            throw std::runtime_error("Could not configure process input cancellation");
+        std::mutex cancelMutex; std::condition_variable_any changed;
+        std::stop_callback cancellation(stop, [&] { std::lock_guard lock(cancelMutex); changed.notify_all(); });
+        std::jthread watchdog([&](std::stop_token done) {
+            std::unique_lock lock(cancelMutex);
+            changed.wait_until(lock, done, deadline, [&] { return stop.stop_requested(); });
+            // Repeated cancellation covers the gap between timeout checks and WriteFile.
+            while (!done.stop_requested()) {
+                CancelSynchronousIo(thread.handle);
+                changed.wait_for(lock, done, std::chrono::milliseconds(5), [] { return false; });
+            }
+        });
 #endif
-        data.remove_prefix(sent);
-    }
+        while (!data.empty()) {
+            if (stop.stop_requested()) throw std::runtime_error("Tool input cancelled");
+            if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error("Tool input timed out");
+#if defined(_WIN32)
+            DWORD sent {};
+            if (!impl_->input || !WriteFile(impl_->input, data.data(), static_cast<DWORD>(std::min<std::size_t>(data.size(), 65536)), &sent, nullptr) || !sent)
+                throw std::runtime_error(stop.stop_requested() ? "Tool input cancelled" : std::chrono::steady_clock::now() >= deadline ? "Tool input timed out" : "Tool input closed");
+#else
+            if (impl_->input < 0) throw std::runtime_error("Tool input closed");
+            signal(SIGPIPE, SIG_IGN);
+            auto sent = ::write(impl_->input, data.data(), std::min<std::size_t>(data.size(), 65536));
+            if (sent < 0 && errno == EINTR) continue;
+            if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                pollfd descriptor {impl_->input, POLLOUT, 0};
+                auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+                const auto result = ::poll(&descriptor, 1, static_cast<int>(std::clamp<std::int64_t>(remaining, 1, 20)));
+                if (result < 0 && errno != EINTR) throw std::runtime_error("Tool input closed");
+                if (result > 0 && (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))) throw std::runtime_error("Tool input closed");
+                continue;
+            }
+            if (sent <= 0) throw std::runtime_error("Tool input closed");
+#endif
+            data.remove_prefix(static_cast<std::size_t>(sent));
+        }
+    } catch (...) { close_input(); throw; }
 #endif
 }
 void Process::close_input() {

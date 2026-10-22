@@ -33,10 +33,18 @@ Json clean(Json value, const std::filesystem::path& root) {
     return value;
 }
 class Language {
+    static constexpr std::size_t MAX_MESSAGE_BYTES {16 * 1024 * 1024};
+    static constexpr std::size_t MAX_QUEUED_BYTES {64 * 1024 * 1024};
+    static constexpr std::size_t MAX_QUEUED_MESSAGES {256};
     Process process_;
     std::mutex mutex_;
     std::mutex writerMutex_;
     std::condition_variable ready_;
+    std::condition_variable_any outboundReady_;
+    std::deque<std::string> outbound_;
+    std::size_t pendingBytes_ {};
+    bool writing_ {};
+    std::set<std::int64_t> pendingRequests_;
     std::map<std::int64_t, Json> replies_;
     std::map<std::string, Json> diagnostics_;
     Json status_;
@@ -44,10 +52,41 @@ class Language {
     Json serverCapabilities_;
     std::atomic<bool> closed_ {false};
     std::atomic<std::int64_t> next_ {1};
-    std::jthread reader_;
+    std::jthread reader_, writer_;
+    void fail_(std::string message) {
+        { std::lock_guard lock(mutex_); if (failure_.empty()) failure_ = std::move(message); }
+        closed_ = true; ready_.notify_all(); outboundReady_.notify_all();
+    }
     void send_(Json message) {
-        auto body = message.dump(); std::lock_guard lock(writerMutex_);
-        process_.write("Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body);
+        if (closed_) throw CommandError("tool-unavailable", "Language server is unavailable");
+        auto body = message.dump();
+        if (body.size() > MAX_MESSAGE_BYTES) throw CommandError("language-message-too-large", "Language message exceeds the transport limit");
+        auto frame = "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+        std::lock_guard lock(writerMutex_);
+        if (closed_) throw CommandError("tool-unavailable", "Language server is unavailable");
+        if (outbound_.size() + (writing_ ? 1 : 0) >= MAX_QUEUED_MESSAGES || frame.size() > MAX_QUEUED_BYTES - pendingBytes_)
+            throw CommandError("language-busy", "Language service send queue is full");
+        outbound_.push_back(std::move(frame)); pendingBytes_ += outbound_.back().size(); outboundReady_.notify_one();
+    }
+    void transmit_(std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            std::string frame;
+            {
+                std::unique_lock lock(writerMutex_);
+                if (!outboundReady_.wait(lock, stop, [&] { return !outbound_.empty() || closed_; }) || closed_) break;
+                frame = std::move(outbound_.front()); outbound_.pop_front(); writing_ = true;
+            }
+            try { process_.write(frame, std::chrono::seconds(5), stop); }
+            catch (const std::exception&) { if (!stop.stop_requested()) fail_("Language server input is unavailable"); break; }
+            { std::lock_guard lock(writerMutex_); pendingBytes_ -= frame.size(); writing_ = false; }
+        }
+        std::lock_guard lock(writerMutex_); outbound_.clear(); pendingBytes_ = 0; writing_ = false;
+    }
+    void shutdown_() {
+        closed_ = true; writer_.request_stop(); reader_.request_stop(); outboundReady_.notify_all(); ready_.notify_all();
+        if (writer_.joinable()) writer_.join();
+        if (reader_.joinable()) reader_.join();
+        process_.terminate();
     }
     void receive_(std::stop_token stop) {
         try {
@@ -60,7 +99,7 @@ class Language {
                     auto header = buffer.substr(0, end); auto at = header.find("Content-Length:");
                     if (at == std::string::npos) throw std::runtime_error("Invalid language frame");
                     auto length = std::stoull(header.substr(at + 15));
-                    if (length > 16 * 1024 * 1024) throw std::runtime_error("Language message exceeds limit");
+                    if (length > MAX_MESSAGE_BYTES) throw std::runtime_error("Language message exceeds limit");
                     if (buffer.size() < end + 4 + length) break;
                     auto message = Json::parse(buffer.substr(end + 4, length)); buffer.erase(0, end + 4 + length);
                     if (message.contains("method") && message.contains("id")) {
@@ -72,7 +111,7 @@ class Language {
                         send_({{"jsonrpc", "2.0"}, {"id", message["id"]}, {"result", result}});
                     } else if (message.contains("id") && message["id"].is_number_integer()) {
                         const auto id = message["id"].get<std::int64_t>();
-                        std::lock_guard lock(mutex_); replies_[id] = std::move(message); ready_.notify_all();
+                        std::lock_guard lock(mutex_); if (pendingRequests_.contains(id)) { replies_[id] = std::move(message); ready_.notify_all(); }
                     } else if (message.value("method", "") == "textDocument/publishDiagnostics") {
                         auto params = message.at("params"); auto uri = params.value("uri", "");
                         std::lock_guard lock(mutex_); diagnostics_[uri] = std::move(params);
@@ -82,12 +121,13 @@ class Language {
                 }
                 if (read.ended) break;
             }
-        } catch (const std::exception& error) { std::lock_guard lock(mutex_); failure_ = error.what(); }
-        closed_ = true; ready_.notify_all();
+        } catch (const std::exception&) { if (!stop.stop_requested()) fail_("Language server output is unavailable"); }
+        closed_ = true; ready_.notify_all(); outboundReady_.notify_all();
     }
 public:
     Language(const std::filesystem::path& tool, const std::filesystem::path& driver, const std::filesystem::path& root, const ProcessEnvironment& environment) {
         process_.start({path_to_utf8(tool), "serve"}, root, false, environment);
+        writer_ = std::jthread([this](std::stop_token stop) { transmit_(stop); });
         reader_ = std::jthread([this](std::stop_token stop) { receive_(stop); });
         try {
             auto init = request("initialize", {{"processId", nullptr}, {"rootUri", make_uri(root)}, {"clientInfo", {{"name", "meditor"}, {"version", "0.0.1"}}},
@@ -98,23 +138,40 @@ public:
                     {"experimental", {{"cxxModules", {{"version", 1}, {"status", true}, {"graph", true}, {"contexts", true}}}}}}}}, 30000);
             serverCapabilities_ = init.value("capabilities", Json::object());
             notify("initialized", Json::object());
-        } catch (...) { reader_.request_stop(); if (reader_.joinable()) reader_.join(); process_.terminate(); throw; }
+        } catch (...) { shutdown_(); throw; }
     }
-    ~Language() { reader_.request_stop(); if (reader_.joinable()) reader_.join(); process_.terminate(); }
+    ~Language() { shutdown_(); }
     Json request(std::string method, Json params, int timeout = 15000) {
-        auto id = next_++; send_({{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", std::move(params)}});
-        std::unique_lock lock(mutex_);
-        if (!ready_.wait_for(lock, std::chrono::milliseconds(timeout), [&] { return replies_.contains(id) || closed_; })) {
-            lock.unlock(); notify("$/cancelRequest", {{"id", id}}); throw CommandError("timeout", "Language request timed out");
-        }
-        if (!replies_.contains(id)) throw CommandError("tool-unavailable", "Language server stopped" + (failure_.empty() ? std::string() : ": " + failure_));
-        auto response = std::move(replies_.at(id)); replies_.erase(id);
-        if (response.contains("error")) throw CommandError("language-error", response["error"].value("message", "Language request failed"));
-        return response.value("result", Json(nullptr));
+        const auto id = next_++;
+        { std::lock_guard lock(mutex_); pendingRequests_.insert(id); }
+        try {
+            send_({{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", std::move(params)}});
+            Json response;
+            {
+                std::unique_lock lock(mutex_);
+                if (!ready_.wait_for(lock, std::chrono::milliseconds(timeout), [&] { return replies_.contains(id) || closed_; })) {
+                    pendingRequests_.erase(id); lock.unlock();
+                    try { notify("$/cancelRequest", {{"id", id}}); } catch (const std::exception&) {}
+                    throw CommandError("timeout", "Language request timed out");
+                }
+                pendingRequests_.erase(id);
+                if (!replies_.contains(id)) throw CommandError("tool-unavailable", "Language server stopped");
+                response = std::move(replies_.at(id)); replies_.erase(id);
+            }
+            if (response.contains("error")) throw CommandError("language-error", response["error"].value("message", "Language request failed"));
+            return response.value("result", Json(nullptr));
+        } catch (...) { std::lock_guard lock(mutex_); pendingRequests_.erase(id); replies_.erase(id); throw; }
     }
     void notify(std::string method, Json params) { send_({{"jsonrpc", "2.0"}, {"method", method}, {"params", std::move(params)}}); }
     Json diagnostics() { std::lock_guard lock(mutex_); Json values = Json::array(); for (auto& [uri, item] : diagnostics_) values.push_back(item); return values; }
-    Json status() { std::lock_guard lock(mutex_); return status_; }
+    static Json limits() { return {{"notificationDelivery", "queued"}, {"maxMessageBytes", MAX_MESSAGE_BYTES}, {"maxQueuedBytes", MAX_QUEUED_BYTES}, {"maxQueuedMessages", MAX_QUEUED_MESSAGES}, {"writeTimeoutMs", 5000}}; }
+    bool available() const { return !closed_; }
+    Json status() {
+        Json result;
+        { std::lock_guard lock(mutex_); result = {{"state", closed_ ? "stopped" : "running"}, {"backend", status_}, {"error", failure_.empty() ? Json(nullptr) : Json(failure_)}}; }
+        { std::lock_guard lock(writerMutex_); result["queuedMessages"] = outbound_.size() + (writing_ ? 1 : 0); result["queuedBytes"] = pendingBytes_; }
+        return result;
+    }
     bool modules_supported() const { return serverCapabilities_.value("experimental", Json::object()).contains("cxxModules"); }
 };
 struct Task {
@@ -193,6 +250,9 @@ struct Application::Impl {
     void require_trust() const { if (!trusted) throw CommandError("workspace-untrusted", "Explicitly trust this workspace before executing tools"); }
     void sync(Record& record) {
         require_trust();
+        if (language && !language->available()) {
+            language.reset(); for (auto& [id, open] : documents) open->synced = 0;
+        }
         if (!language) {
             runtime.prepare_tools();
             language = std::make_unique<Language>(tool("mcppls"), tool("mcpp"), root, runtime.tool_environment());
@@ -289,7 +349,7 @@ struct Application::Impl {
         }
         if (command == "workspace.status") {
             Json docs = Json::array(); for (const auto& [id, record] : documents) docs.push_back(summary(id, *record));
-            return {{"name", path_to_utf8(root.filename())}, {"generation", workspaceGeneration}, {"trusted", trusted}, {"documents", docs}, {"language", language ? language->status() : Json(nullptr)}};
+            return {{"name", path_to_utf8(root.filename())}, {"generation", workspaceGeneration}, {"trusted", trusted}, {"documents", docs}, {"language", language ? clean(language->status(), root) : Json(nullptr)}};
         }
         if (command == "workspace.trust") { trusted = params.at("allow").get<bool>(); if (!trusted) { for (auto& [id, task] : tasks) task->worker.request_stop(); language.reset(); for (auto& [id, record] : documents) record->synced = 0; } return {{"trusted", trusted}}; }
         if (command == "workspace.files") return workspace_files(root);
@@ -376,6 +436,7 @@ struct Application::Impl {
             }
             auto revision = params.at("revision").get<std::uint64_t>();
             if (record.document.revision() != revision) throw CommandError("revision-conflict", "Document changed; read the current revision before editing");
+            Json saveNotification;
             if (command == "document.edit") {
                 std::vector<Edit> edits;
                 for (const auto& edit : params.at("edits")) {
@@ -395,10 +456,23 @@ struct Application::Impl {
                 auto path = resolve(record.path);
                 if (record.existed != std::filesystem::exists(path) || (record.existed && read_file(path, MAX_DOCUMENT_BYTES) != record.document.saved_text())) throw CommandError("disk-conflict", "The file changed on disk; preserve both versions before saving");
                 auto text = record.document.text(); write_file_atomic(path, text); record.document.mark_saved(text); record.existed = true;
-                if (language && record.synced) language->notify("textDocument/didSave", {{"textDocument", {{"uri", make_uri(path)}}}});
+                saveNotification = {{"state", language ? "not-open" : "not-running"}};
+                if (language && record.synced) {
+                    try {
+                        if (!language->available()) throw CommandError("tool-unavailable", "Language server is unavailable");
+                        const auto uri = make_uri(path);
+                        if (record.synced != record.document.revision()) {
+                            language->notify("textDocument/didChange", {{"textDocument", {{"uri", uri}, {"version", ++record.lspVersion}}}, {"contentChanges", Json::array({{{"text", text}}})}});
+                            record.synced = record.document.revision();
+                        }
+                        language->notify("textDocument/didSave", {{"textDocument", {{"uri", uri}}}}); saveNotification = {{"state", "queued"}};
+                    }
+                    catch (const CommandError& error) { saveNotification = {{"state", "unavailable"}, {"code", error.code}}; }
+                    catch (const std::exception&) { saveNotification = {{"state", "unavailable"}, {"code", "tool-unavailable"}}; }
+                }
             } else throw CommandError("unknown-command", "Unknown document command");
             record.refresh_format();
-            return summary(id, record);
+            auto result = summary(id, record); if (!saveNotification.is_null()) result["languageSaveNotification"] = saveNotification; return result;
         }
         if (command == "doctor") {
             Json result = {{"version", "0.0.1"}, {"tools", Json::object()}, {"runtime", {{"mode", runtime.portable ? "portable" : "installed"}, {"managedToolHomes", true}}}};
@@ -496,7 +570,7 @@ Json Application::capabilities() const {
         if (command == "build" || command == "run" || command == "test" || command == "project.new" || command.starts_with("package.") || command.starts_with("toolchain.") || command == "environment.prepare") field("timeoutMs", "integer");
         schemas[command] = {{"type", "object"}, {"properties", properties}, {"required", required}, {"additionalProperties", false}};
     }
-    return {{"version", "0.0.1"}, {"protocolVersion", 1}, {"positionEncoding", "utf-16"}, {"editOffsets", "utf-8-bytes"}, {"sessionTransport", "stdio-jsonl"}, {"commands", commands}, {"commandSchemas", schemas}};
+    return {{"version", "0.0.1"}, {"protocolVersion", 1}, {"positionEncoding", "utf-16"}, {"editOffsets", "utf-8-bytes"}, {"sessionTransport", "stdio-jsonl"}, {"maxDocumentBytes", MAX_DOCUMENT_BYTES}, {"languageTransport", Language::limits()}, {"commands", commands}, {"commandSchemas", schemas}};
 }
 Json Application::execute(const Json& request) {
     Json response = {{"schemaVersion", 1}, {"kind", "meditor.result"}, {"kindVersion", 1}, {"session", session_id()}, {"requestId", request.is_object() ? request.value("id", Json(nullptr)) : Json(nullptr)}, {"effects", Json::array()}};

@@ -254,7 +254,7 @@ View workbench(WorkspaceServices services) {
             if (!current.value("ok", false)) { refresh(); return; }
             if (current["data"]["format"].value("loneCarriageReturns", false)) { data->notice("editor.unsupportedLineEndings"); refresh(); return; }
             auto result = run("document.save", {{"document", data->active}, {"revision", current["data"]["revision"]}});
-            if (result.value("ok", false)) data->notice("status.saved");
+            if (result.value("ok", false)) data->notice(result["data"].value("languageSaveNotification", Json::object()).value("state", "") == "unavailable" ? "status.savedLanguageUnavailable" : "status.saved");
             refresh();
         };
         auto executeTask = [data, tasks, run, refresh](std::string command) {

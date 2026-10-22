@@ -9,6 +9,92 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import queue
+import threading
+import time
+
+
+def language_failure_contract(binary, tools, root):
+    for fault in ["normal", "oversize", "exit-after-hover", "flood-and-stall"]:
+        workspace = root / fault
+        workspace.mkdir()
+        source = workspace / "main.cppm"
+        source.write_bytes(b'"' * (9 * 1024 * 1024) if fault == "oversize" else b"original\n")
+        process = subprocess.Popen([str(binary), "serve", "--stdio", "--workspace", str(workspace), "--tool-root", str(tools), "--data-root", str(workspace / "runtime")],
+                                   env={**os.environ, "MEDITOR_FIXTURE_LSP_MODE": fault}, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        replies = queue.Queue()
+        def receive():
+            try:
+                for line in process.stdout:
+                    replies.put(json.loads(line))
+            finally:
+                replies.put(None)
+        listener = threading.Thread(target=receive, daemon=True)
+        listener.start()
+        sequence = 0
+        def call(command, params=None, *, ok=True):
+            nonlocal sequence
+            sequence += 1
+            process.stdin.write(json.dumps({"id": sequence, "command": command, "params": params or {}}) + "\n")
+            process.stdin.flush()
+            reply = replies.get(timeout=15)
+            assert reply is not None and reply["requestId"] == sequence and reply["ok"] is ok, (fault, command, reply)
+            return reply
+        try:
+            document = call("document.open", {"path": "main.cppm"})["data"]["document"]
+            call("workspace.trust", {"allow": True})
+            if fault == "oversize":
+                rejected = call("language.completion", {"document": document, "position": {"line": 0, "character": 0}}, ok=False)
+                assert rejected["error"]["code"] == "language-message-too-large"
+                call("document.edit", {"document": document, "revision": 1, "edits": [{"start": 0, "end": 0, "text": "x"}]})
+                saved = call("document.save", {"document": document, "revision": 2})
+                assert not saved["data"]["dirty"] and saved["data"]["languageSaveNotification"]["state"] == "not-open"
+                assert source.read_bytes() == b"x" + b'"' * (9 * 1024 * 1024)
+                call("language.stop")
+                continue
+            call("language.completion", {"document": document, "position": {"line": 0, "character": 0}})
+            if fault == "normal":
+                call("document.edit", {"document": document, "revision": 1, "edits": [{"start": 0, "end": 9, "text": "saved current version\n"}]})
+                saved = call("document.save", {"document": document, "revision": 2})
+                assert saved["data"]["languageSaveNotification"]["state"] == "queued"
+                observed = call("language.hover", {"document": document, "position": {"line": 0, "character": 0}})["data"]["fixture"]["lastSaved"]
+                assert observed == {"version": 2, "text": "saved current version\n"}, "Save notification preceded the current buffer change"
+                call("language.stop")
+                continue
+            if fault == "exit-after-hover":
+                call("language.hover", {"document": document, "position": {"line": 0, "character": 0}})
+            deadline = time.monotonic() + 10
+            while True:
+                state = call("workspace.status")["data"]["language"]
+                assert state["queuedMessages"] <= 256 and state["queuedBytes"] <= 64 * 1024 * 1024
+                if state["state"] == "stopped":
+                    break
+                assert time.monotonic() < deadline, "Faulted language service did not reach a terminal state"
+                time.sleep(.02)
+            call("document.edit", {"document": document, "revision": 1, "edits": [{"start": 0, "end": 9, "text": "saved despite language failure\n"}]})
+            start = time.monotonic()
+            saved = call("document.save", {"document": document, "revision": 2})
+            assert time.monotonic() - start < 3, "Saving waited for the unavailable language server"
+            assert saved["effects"] == ["file-write"] and not saved["data"]["dirty"]
+            assert saved["data"]["languageSaveNotification"]["state"] == "unavailable"
+            assert source.read_bytes() == b"saved despite language failure\n"
+            if fault == "exit-after-hover":
+                assert call("language.completion", {"document": document, "position": {"line": 0, "character": 0}})["data"]["items"][0]["label"] == "module_value"
+                assert call("language.diagnostics")["data"][0]["version"] == 2
+            start = time.monotonic()
+            call("language.stop")
+            assert time.monotonic() - start < 5, "Stopping a blocked language transport did not finish"
+        finally:
+            process.stdin.close()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait(timeout=5)
+            listener.join(timeout=1)
+            assert not listener.is_alive() and process.returncode == 0, "Fault-case CLI did not exit cleanly"
+            assert not process.stderr.read(), "Fault-case CLI emitted unexpected errors"
+            process.stdout.close(); process.stderr.close()
+    print("Language save ordering, frame limits, exit/backpressure and bounded stop/reconnect: passed")
 
 
 def portable_contract(binary, tools, project, root):
@@ -148,6 +234,7 @@ def main():
             assert request("document.open", {"path": "../outside"}, ok=False)["code"] == "invalid-path"
             assert request("document.open", {"path": "missing"}, ok=False)["code"] == "not-found"
             capabilities = request("capabilities")
+            assert capabilities["languageTransport"] == {"notificationDelivery": "queued", "maxMessageBytes": 16 * 1024 * 1024, "maxQueuedBytes": 64 * 1024 * 1024, "maxQueuedMessages": 256, "writeTimeoutMs": 5000}
             assert set(capabilities["commands"]) == set(capabilities["commandSchemas"])
             settings = request("settings.get")
             assert settings == {"revision": 0, "values": {"theme": "dark", "reducedMotion": False, "language": "auto"}}
@@ -316,6 +403,7 @@ def main():
         once = subprocess.run([str(binary), "doctor", "--workspace", str(project), "--tool-root", str(tools), "--format", "json"], capture_output=True, text=True, timeout=20)
         assert once.returncode == 0 and json.loads(once.stdout)["ok"]
         assert str(root) not in once.stdout
+        language_failure_contract(binary, tools, root)
         localization_contract(binary, project, settings_file)
         portable_contract(binary, tools, project, root)
     print("CLI documents, disk conflicts, task execution and LSP framing: passed")

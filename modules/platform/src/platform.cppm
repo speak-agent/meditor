@@ -25,7 +25,7 @@ public:
     Process& operator=(Process&&) noexcept;
     Process(const Process&) = delete;
     void start(const std::vector<std::string>& arguments, const std::filesystem::path& directory, bool mergeErrors = true, const ProcessEnvironment& environment = {});
-    void write(std::string_view data);
+    void write(std::string_view data, std::chrono::milliseconds timeout = std::chrono::seconds(5), std::stop_token stop = {});
     void close_input();
     ProcessRead read(std::chrono::milliseconds timeout);
     std::optional<int> poll();
