@@ -287,17 +287,17 @@ xlings 在这里作为源码示例纳入，不因此自动增加一个常驻服�
 
 | 命令族 | 覆盖能力 |
 | --- | --- |
-| `meditor open`、`workspace`、`session` | 打开工程、会话选择、状态与关闭 |
-| `meditor document` | 打开/读取、范围编辑、保存、撤销重做、查找替换、恢复 |
-| `meditor language` | 补全、悬停、签名、定义、引用、诊断、符号和语义重命名 |
-| `meditor project`、`package`、`toolchain` | 工程创建、目标/profile/features、依赖搜索管理、环境准备 |
-| `meditor build`、`run`、`test`、`task` | 构建运行测试、进度、日志、等待与取消 |
-| `meditor modules`、`cache` | 模块关系/详情、分析上下文和分类缓存维护 |
-| `meditor example`、`settings`、`doctor` | 示例工作副本、设置、环境自检与脱敏报告 |
-| `meditor ui` | 已运行界面的逻辑布局、面板、焦点和命令控制；截图等敏感导出显式请求 |
-| `meditor capabilities`、`help` | 枚举版本、可用命令、参数 schema、当前宿主能力 |
+| `meditor --cli open`、`workspace`、`session` | 打开工程、会话选择、状态与关闭 |
+| `meditor --cli document` | 打开/读取、范围编辑、保存、撤销重做、查找替换、恢复 |
+| `meditor --cli language` | 补全、悬停、签名、定义、引用、诊断、符号和语义重命名 |
+| `meditor --cli project`、`package`、`toolchain` | 工程创建、目标/profile/features、依赖搜索管理、环境准备 |
+| `meditor --cli build`、`run`、`test`、`task` | 构建运行测试、进度、日志、等待与取消 |
+| `meditor --cli modules`、`cache` | 模块关系/详情、分析上下文和分类缓存维护 |
+| `meditor --cli example`、`settings`、`doctor` | 示例工作副本、设置、环境自检与脱敏报告 |
+| `meditor --cli ui` | 已运行界面的逻辑布局、面板、焦点和命令控制；截图等敏感导出显式请求 |
+| `meditor --cli capabilities`、`help` | 枚举版本、可用命令、参数 schema、当前宿主能力 |
 
-**共享内核与会话：** 无窗口命令直接调用应用服务；需语言服务时按需启动 mcppls，会话结束释放资源。长任务和持续 Agent 操作可使用显式 `meditor serve` 会话。默认没有额外常驻全局守护进程。GUI 运行时暴露受限的本地会话接口，CLI 可连接同一会话，复用未保存文档、撤销历史和服务实例。
+**共享内核与会话：** 无窗口命令直接调用应用服务；需语言服务时按需启动 mcppls，会话结束释放资源。长任务和持续 Agent 操作可使用显式 `meditor --cli serve` 会话。默认没有额外常驻全局守护进程。GUI 运行时暴露受限的本地会话接口，CLI 可连接同一会话，复用未保存文档、撤销历史和服务实例。
 
 每个工作区的活动文档只有一个权威会话。CLI 自动发现会话时必须返回采用的 session ID；存在歧义时要求 `--session`，不能猜测目标。修改文档需提供预期 revision，冲突返回错误且不部分执行。GUI 已有未保存文档时，CLI 不静默另开磁盘副本修改同一文件；支持显式磁盘快照只读查询。任务明确说明输入来自保存后的源码，不能把内存编辑冒充已构建内容。
 
@@ -693,7 +693,7 @@ README 不追加 GPL/Contributors/邮箱的署名行，保持产品入口简洁�
 | GTK 等传递运行库、字体和源码示例 | 实际平台包的运行闭包与示例清单 | 保留各自许可证及适用通知，覆盖真实交付内容 |
 | 自有插件及 mcpp 构建插件依赖 | 构建图与锁定版本 | 构建材料中记录；只有实际随包或涉及声明时进入对应发行清单 |
 
-`mcpp/` 根据 lockfile、载荷清单、示例及资源元数据生成版本与开源声明资源，GUI 与 `meditor about` / `meditor licenses` 读取同一份离线数据；缺少必需声明时阻止候选发布。点击公开链接属于用户操作，不自动遥测或上传；关于页与 CLI 输出不得包含生成机器路径或私有远端地址。
+`mcpp/` 根据 lockfile、载荷清单、示例及资源元数据生成版本与开源声明资源，GUI 与 `meditor --cli about` / `meditor --cli licenses` 读取同一份离线数据；缺少必需声明时阻止候选发布。点击公开链接属于用户操作，不自动遥测或上传；关于页与 CLI 输出不得包含生成机器路径或私有远端地址。
 
 ### 15.6 实现顺序与交付验收
 

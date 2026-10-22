@@ -1,7 +1,7 @@
 # Offline About and license records
 
-`meditor about --format json` and `meditor licenses --format json` use the same
-application module as the GUI About entry. Human `meditor about` shows a concise,
+`meditor --cli about --format json` and `meditor --cli licenses --format json` use the same
+application module as the GUI About entry. Human `meditor --cli about` shows a concise,
 localized summary. The GUI entry is currently in the bottom bar, on both welcome
 and workspace screens. It opens product details and a scrollable dependency list;
 license buttons open selectable, read-only original text. Back/Escape return

@@ -294,7 +294,7 @@ struct Application::Impl {
         executable += ".exe";
 #endif
         for (const auto& candidate : {tools / name / "bin" / executable, tools / "bin" / executable, tools / executable}) if (std::filesystem::is_regular_file(candidate)) return std::filesystem::absolute(candidate);
-        throw CommandError("tool-unavailable", "The bundled " + name + " tool is unavailable; use meditor doctor");
+        throw CommandError("tool-unavailable", "The bundled " + name + " tool is unavailable; use meditor --cli doctor");
     }
     Record& record(const Json& params) {
         auto id = params.at("document").get<std::string>();

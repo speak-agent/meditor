@@ -8,7 +8,7 @@ remains usable while navigating between its captured files. Editing a captured
 document invalidates the list. Results do not implicitly save files.
 
 The shared GUI/CLI service adds the following operations. Query IDs belong to a
-persistent `meditor serve --stdio` session or GUI application core; they are not
+persistent `meditor --cli serve --stdio` session or GUI application core; they are not
 identifiers shared by independent one-shot processes.
 
 | Interface | Behavior |

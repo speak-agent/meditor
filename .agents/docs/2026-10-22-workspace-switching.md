@@ -1,6 +1,6 @@
 # 工作区切换与任务生命周期
 
-GUI 与 `meditor serve --stdio` 共用应用内核中的工作区切换操作。切换不创建新的应用会话，也不改变编辑器设置、工具目录或运行时数据目录；每次成功切换递增工作区 generation。
+GUI 与 `meditor --cli serve --stdio` 共用应用内核中的工作区切换操作。切换不创建新的应用会话，也不改变编辑器设置、工具目录或运行时数据目录；每次成功切换递增工作区 generation。
 
 - `workspace.canLeave` 返回 `canLeave`、`generation`、`unsavedDocuments` 和 `runningTasks`，供离开前提示使用。
 - `workspace.switch` 接收目录 `path` 和读取到的 `generation`。目录可为绝对路径或相对当前工作区的路径；只在本机命令中使用，返回结果不包含绝对目录。

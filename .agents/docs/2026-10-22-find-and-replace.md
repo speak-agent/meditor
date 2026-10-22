@@ -16,7 +16,7 @@ GUI 通过工具栏“查找”或 Ctrl/Cmd+F 打开框架的搜索对话框，�
 
 ## CLI 契约示例
 
-在同一个 `meditor serve --stdio` 会话中打开文档，再使用其 document 和 revision：
+在同一个 `meditor --cli serve --stdio` 会话中打开文档，再使用其 document 和 revision：
 
 ```json
 {"command":"document.find","params":{"document":"<id>","revision":1,"query":"needle","coordinateSpace":"display","limit":1000}}
