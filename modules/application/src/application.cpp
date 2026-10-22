@@ -732,7 +732,8 @@ struct Application::Impl {
             auto result = summary(id, record); if (!saveNotification.is_null()) result["languageSaveNotification"] = saveNotification; return result;
         }
         if (command == "doctor") {
-            Json result = {{"version", "0.0.1"}, {"tools", Json::object()}, {"runtime", {{"mode", runtime.portable ? "portable" : "installed"}, {"managedToolHomes", true}}}};
+            const auto toolHome = path_to_utf8(runtime.toolRoot);
+            Json result = {{"version", "0.0.1"}, {"tools", Json::object()}, {"runtime", {{"mode", runtime.portable ? "portable" : "installed"}, {"managedToolHomes", true}, {"toolHomeContainsSpaces", toolHome.find(' ') != std::string::npos}}}};
             for (auto name : {"mcpp", "mcppls"}) { try { tool(name); result["tools"][name] = {{"available", true}}; } catch (...) { result["tools"][name] = {{"available", false}}; } }
             return result;
         }

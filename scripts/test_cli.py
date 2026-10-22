@@ -118,7 +118,7 @@ def portable_contract(binary, tools, project, root):
         reply = json.loads(result.stdout); assert reply["ok"]
         return reply["data"]
 
-    assert command("doctor")["runtime"] == {"mode": "portable", "managedToolHomes": True}
+    assert command("doctor")["runtime"] == {"mode": "portable", "managedToolHomes": True, "toolHomeContainsSpaces": True}
     assert not (package / "state").exists()
     command("settings.update", {"revision": 0, "changes": {"theme": "light"}})
     assert json.loads((package / "state/settings.json").read_text(encoding="utf-8"))["values"]["theme"] == "light"
