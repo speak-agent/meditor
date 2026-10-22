@@ -887,7 +887,7 @@ Problems/Outline 首次接入见 [语言面板记录](2026-10-22-language-panels
 
 不把裸 `build`、`serve` 等词隐式当命令，避免与同名文件冲突；终端/Agent 命令明确带 `--cli`。GUI 首版接收一个位置路径；冲突的文件/工作区、重复选项及多余位置参数报错，不默默取最后一个。`--workspace`、`--open`、工具/设置/数据根和便携参数保持原有职责。CLI 指令分组只是人类入口，底层命令 ID、revision、事务、信任、路径和隐私边界不变；不透传任意 shell 文本给 mcpp/mcppls。
 
-CLI 分支不调用 `RunApplication`，无需 DISPLAY/Wayland 会话；统一应用仍链接 GUI 依赖，不能据此宣称可免装所有 GUI 动态依赖。Windows 使用同一个 GUI 子系统程序，CLI 尝试连接调用它的父控制台并保留重定向 stdin/stdout/stderr；不为普通 GUI 启动创建额外控制台。
+CLI 分支不调用 `RunApplication`，无需 DISPLAY/Wayland 会话；统一应用仍链接 GUI 依赖，不能据此宣称可免装所有 GUI 动态依赖。Windows 使用同一个 GUI 子系统程序，通过 mcpp 的 UTF-8 进程代码页 manifest 保留原生命令行中的中文等路径（Windows 10 1903 及后续版本）；路径校验使用 UTF-8，避免系统传统代码页转换。CLI 尝试连接调用它的父控制台并保留重定向 stdin/stdout/stderr；不为普通 GUI 启动创建额外控制台。真实交互式父终端的呈现与 shell 等待行为继续独立验证。
 
 同一二进制不等于已有跨进程共享会话。当前 CLI 服务和 GUI 各自持有应用会话；Agent 连接已运行 GUI、控制未保存缓冲区，以及复用窗口/跨进程会话发现、认证和生命周期仍需实现。不能把重新打开磁盘文件当作控制 GUI 会话。
 

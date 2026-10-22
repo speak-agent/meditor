@@ -32,6 +32,10 @@ def main():
         for command in [("workspace", "status"), ("workspace.status",)]:
             result = invoke("--cli", *command, "--format", "json")
             assert result.returncode == 0 and json.loads(result.stdout)["ok"]
+        unicode_workspace = root / "workspace 世界"
+        unicode_workspace.mkdir()
+        result = invoke("--cli", "workspace", "status", "--workspace", str(unicode_workspace), "--format", "json")
+        assert result.returncode == 0 and json.loads(result.stdout)["data"]["name"] == unicode_workspace.name, "Native argument decoding must preserve Unicode paths"
         for arguments in [("--gui", "--cli"), ("--gui", "--workspace"), ("--cli", "serve"),
                           ("--cli", "workspace", "status", "extra"), ("--cli", "build", "run")]:
             result = invoke(*arguments)

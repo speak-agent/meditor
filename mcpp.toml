@@ -24,6 +24,7 @@ json = "=3.12.0"
 kind = "app"
 main = "src/main.cpp"
 windows_subsystem = "windows"
+windows_code_page = "utf-8"
 
 [build]
 sources = []
