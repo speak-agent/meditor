@@ -43,6 +43,7 @@
   "error.capability-unavailable": "The tool does not provide this capability",
   "error.disk-conflict": "The file changed on disk. Preserve both versions before saving.",
   "error.document-too-large": "Replacement exceeds the document size limit",
+  "error.file-read-only": "This file is read-only. Change its permissions before saving.",
   "error.invalid-params": "Missing or invalid command parameters",
   "error.invalid-path": "The path must stay inside this workspace",
   "error.invalid-settings": "Settings are invalid. The original file was preserved.",

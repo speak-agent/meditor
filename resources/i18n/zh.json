@@ -43,6 +43,7 @@
   "error.capability-unavailable": "工具未提供此能力",
   "error.disk-conflict": "磁盘上的文件已改变。保存前请保留两个版本。",
   "error.document-too-large": "替换结果超出文档大小限制",
+  "error.file-read-only": "此文件为只读，请修改写入权限后重试保存。",
   "error.invalid-params": "命令参数缺失或无效",
   "error.invalid-path": "路径必须位于此工作区内",
   "error.invalid-settings": "设置无效，已保留原文件。",

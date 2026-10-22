@@ -291,13 +291,39 @@ std::string read_file(const std::filesystem::path& path, std::size_t limit) {
     while (input) { input.read(buffer.data(), buffer.size()); result.append(buffer.data(), input.gcount()); if (result.size() > limit) throw std::runtime_error("File exceeds the editing limit"); }
     if (!input.eof()) throw std::runtime_error("Could not read the file"); return result;
 }
+FileReadOnlyError::FileReadOnlyError() : std::runtime_error("The file is read-only; change its permissions before saving") {}
 void write_file_atomic(const std::filesystem::path& path, std::string_view data) {
+    std::error_code inspection;
+    const auto state = std::filesystem::symlink_status(path, inspection);
+    if (inspection && inspection != std::errc::no_such_file_or_directory) throw std::runtime_error("Could not inspect the destination file");
+    const auto exists = std::filesystem::exists(state);
+    if (exists) {
+        if (!std::filesystem::is_regular_file(state)) throw std::runtime_error("The destination must be a regular file");
+        const auto writable = std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write;
+        if ((state.permissions() & writable) == std::filesystem::perms::none) throw FileReadOnlyError();
+#if defined(_WIN32)
+        auto probe = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (probe == INVALID_HANDLE_VALUE) {
+            if (GetLastError() == ERROR_ACCESS_DENIED || GetLastError() == ERROR_WRITE_PROTECT) throw FileReadOnlyError();
+            throw std::runtime_error("Could not open the destination for writing");
+        }
+        CloseHandle(probe);
+#elif !defined(__EMSCRIPTEN__)
+        if (access(path.c_str(), W_OK)) {
+            if (errno == EACCES || errno == EROFS) throw FileReadOnlyError();
+            throw std::runtime_error("Could not access the destination for writing");
+        }
+#endif
+    }
     auto temporary = path; temporary += ".meditor-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(std::random_device{}()) + ".tmp";
     try {
         { std::ofstream output(temporary, std::ios::binary | std::ios::trunc); output.write(data.data(), static_cast<std::streamsize>(data.size())); output.flush(); if (!output) throw std::runtime_error("Could not write the file"); }
         std::error_code error;
-        auto permissions = std::filesystem::status(path, error).permissions();
-        if (!error) std::filesystem::permissions(temporary, permissions, error);
+        if (exists) {
+            std::filesystem::permissions(temporary, state.permissions(), error);
+            if (error) throw std::runtime_error("Could not preserve file permissions");
+        }
 #if defined(_WIN32)
         if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Could not replace the file");
 #else

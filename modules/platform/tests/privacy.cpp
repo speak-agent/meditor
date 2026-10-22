@@ -20,7 +20,14 @@ int main() {
         auto file = root / "unicode-name.txt";
         meditor::write_file_atomic(file, "你好🙂\r\n");
         require(meditor::read_file(file) == "你好🙂\r\n");
+#if !defined(_WIN32)
+        const auto mode = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::group_read;
+        std::filesystem::permissions(file, mode);
+#endif
         meditor::write_file_atomic(file, "replacement");
+#if !defined(_WIN32)
+        require(std::filesystem::status(file).permissions() == mode);
+#endif
         require(meditor::read_file(file) == "replacement");
         require(std::distance(std::filesystem::directory_iterator(root), std::filesystem::directory_iterator{}) == 1);
     } catch (...) { std::filesystem::remove_all(root); throw; }

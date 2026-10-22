@@ -235,6 +235,19 @@ def main():
             source.write_bytes(original.encode())
             request("document.save", {"document": doc, "revision": 4})
             assert source.read_bytes().decode().startswith("import module")
+            readonly = project / "readonly.cppm"
+            readonly.write_bytes(b"original")
+            readonly_doc = request("document.open", {"path": "readonly.cppm"})["document"]
+            request("document.edit", {"document": readonly_doc, "revision": 1, "edits": [{"start": 0, "end": 8, "text": "pending"}]})
+            readonly.chmod(0o444)
+            try:
+                assert request("document.save", {"document": readonly_doc, "revision": 2}, ok=False)["code"] == "file-read-only"
+                assert readonly.read_bytes() == b"original"
+                assert request("document.read", {"document": readonly_doc})["dirty"]
+            finally:
+                readonly.chmod(0o644)
+            request("document.save", {"document": readonly_doc, "revision": 2})
+            assert readonly.read_bytes() == b"pending"
             request("workspace.trust", {"allow": True})
             switched_project = root / "second 工作区"
             switched_project.mkdir()

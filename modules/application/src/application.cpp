@@ -529,6 +529,7 @@ Json Application::execute(const Json& request) {
         if (command == "settings.update") response["effects"].push_back("settings-change");
         if (response["data"].is_object() && response["data"].value("state", "") == "running") response["effects"].push_back("tool-execution");
     } catch (const CommandError& error) { response["ok"] = false; response["error"] = {{"code", error.code}, {"message", redact(error.what(), impl_->root)}}; }
+    catch (const FileReadOnlyError& error) { response["ok"] = false; response["error"] = {{"code", "file-read-only"}, {"message", error.what()}}; }
     catch (const SettingsError& error) { response["ok"] = false; response["error"] = {{"code", error.code}, {"message", error.what()}}; }
     catch (const nlohmann::json::exception&) { response["ok"] = false; response["error"] = {{"code", "invalid-params"}, {"message", "Missing or invalid command parameters"}}; }
     catch (const std::exception& error) { response["ok"] = false; response["error"] = {{"code", "operation-failed"}, {"message", redact(error.what(), impl_->root)}}; }

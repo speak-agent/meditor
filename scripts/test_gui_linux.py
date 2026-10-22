@@ -43,6 +43,7 @@ def main():
     parser.add_argument("--find", action="store_true")
     parser.add_argument("--bom", action="store_true")
     parser.add_argument("--crlf", action="store_true")
+    parser.add_argument("--readonly", action="store_true")
     args = parser.parse_args()
     if args.binary:
         binary = args.binary.resolve()
@@ -162,7 +163,25 @@ def main():
                 key("Control_L", 1); key(name, 1); key(name, 0); key("Control_L", 0)
                 x.XSync(display, 0); time.sleep(0.15)
 
+            def request_close():
+                event = Event(); event.client.type = 33; event.client.display = display; event.client.window = window
+                event.client.message = x.XInternAtom(display, b"WM_PROTOCOLS", 0); event.client.format = 32
+                event.client.data[0] = x.XInternAtom(display, b"WM_DELETE_WINDOW", 0)
+                x.XSendEvent(display, window, 0, 0, c.byref(event)); x.XFlush(display)
+
             chord("a"); key("x", 1); key("x", 0); x.XSync(display, 0)
+            if args.readonly:
+                source.chmod(0o444); stamp = source.stat().st_mtime_ns
+                chord("s"); time.sleep(.25)
+                if source.read_bytes() != original.encode() or source.stat().st_mtime_ns != stamp:
+                    raise RuntimeError("Read-only GUI save modified the original file")
+                if args.screenshot:
+                    readonly_image = args.screenshot.with_name(args.screenshot.stem + "-readonly.png")
+                    subprocess.run(["import", "-window", hex(window), str(readonly_image)], check=True, timeout=10)
+                request_close(); time.sleep(.25)
+                if process.poll() is not None:
+                    raise RuntimeError("GUI closed with an unsaved buffer after a failed save")
+                source.chmod(0o644)
             chord("s")
             wait_for(lambda: source.read_bytes() == replacement.encode())
             chord("z"); chord("s")
@@ -200,10 +219,7 @@ def main():
             if args.screenshot:
                 args.screenshot.parent.mkdir(parents=True, exist_ok=True)
                 subprocess.run(["import", "-window", hex(window), str(args.screenshot)], check=True, timeout=10)
-            event = Event(); event.client.type = 33; event.client.display = display; event.client.window = window
-            event.client.message = x.XInternAtom(display, b"WM_PROTOCOLS", 0); event.client.format = 32
-            event.client.data[0] = x.XInternAtom(display, b"WM_DELETE_WINDOW", 0)
-            x.XSendEvent(display, window, 0, 0, c.byref(event)); x.XFlush(display)
+            request_close()
             process.wait(timeout=10)
             if process.returncode != 0:
                 raise RuntimeError("Native GUI did not exit cleanly")

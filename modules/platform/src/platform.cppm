@@ -33,6 +33,10 @@ public:
 };
 std::string path_to_utf8(const std::filesystem::path& path);
 std::string read_file(const std::filesystem::path& path, std::size_t limit = 32 * 1024 * 1024);
+class FileReadOnlyError : public std::runtime_error {
+public:
+    FileReadOnlyError();
+};
 void write_file_atomic(const std::filesystem::path& path, std::string_view data);
 std::filesystem::path executable_directory();
 std::filesystem::path user_config_directory();
