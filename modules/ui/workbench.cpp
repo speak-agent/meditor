@@ -92,9 +92,9 @@ struct WorkspaceModel {
 void configure(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string_view argument = argv[i];
-        if (argument == "--workspace" && i + 1 < argc) initialWorkspace = argv[++i];
-        else if (argument == "--tool-root" && i + 1 < argc) initialTools = argv[++i];
-        else if (argument == "--settings-file" && i + 1 < argc) initialSettings = argv[++i];
+        if (argument == "--workspace" && i + 1 < argc) initialWorkspace = std::filesystem::u8path(argv[++i]);
+        else if (argument == "--tool-root" && i + 1 < argc) initialTools = std::filesystem::u8path(argv[++i]);
+        else if (argument == "--settings-file" && i + 1 < argc) initialSettings = std::filesystem::u8path(argv[++i]);
         else if (argument == "--data-root" && i + 1 < argc) initialRuntime.dataRoot = std::filesystem::u8path(argv[++i]);
         else if (argument == "--portable") initialRuntime.portable = true;
         else if (argument == "--open" && i + 1 < argc) initialDocument = argv[++i];
@@ -343,7 +343,7 @@ View workbench(WorkspaceServices services) {
             if (!data->active.empty()) editor = code_editor(data->editors.at(data->active), data->dark);
             auto tabs = Flow {ForEach(data->tabs, [data, run, refresh, pane, t](const std::string& id) {
                 auto record = data->application->execute({{"command", "document.read"}, {"params", {{"document", id}}}})["data"];
-                auto name = std::filesystem::path(record.value("path", t("workspace.untitled"))).filename().string();
+                auto name = meditor::path_to_utf8(std::filesystem::u8path(record.value("path", t("workspace.untitled"))).filename());
                 if (record.value("dirty", false)) name += " •";
                 return Button(name).Key(id).With(Background(data->active == id ? Color::Rgb(54, 69, 98) : pane)).OnClick([data, id, refresh] { data->active = id; refresh(); });
             })}.With(Padding(8), Spacing(6), Background(pane));

@@ -26,10 +26,10 @@ int main() {
     using namespace huxerui::testing;
     const auto directory = std::filesystem::temp_directory_path() / ("meditor-picker-" + std::to_string(std::random_device{}()));
     struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup {directory};
-    auto first = directory / "first"; destination = directory / "second";
+    auto first = directory / "first"; destination = directory / std::filesystem::u8path("第二 workspace");
     std::filesystem::create_directories(first); std::filesystem::create_directories(destination);
     { std::ofstream file(first / "main.cppm"); file << "original"; }
-    { std::ofstream file(destination / "second.cppm"); file << "second"; }
+    { std::ofstream file(destination / std::filesystem::u8path("模块.cppm")); file << "second"; }
     std::vector<std::string> arguments {"meditor-gui", "--workspace", first.string(), "--open", "main.cppm", "--data-root", (directory / "runtime").string()};
     std::vector<char*> pointers; for (auto& arg : arguments) pointers.push_back(arg.data());
     meditor::ui::configure(static_cast<int>(pointers.size()), pointers.data());
@@ -45,7 +45,7 @@ int main() {
     require(ui.SendTextInput({session->session_id, {command}}).result_code == TextInputResultCode::Ok); ui.Pump();
     finish();
     require(ui.Find(UiSelector::Text("Save modified documents before continuing")).Exists());
-    require(ui.Find(editor).Exists() && !ui.Find(UiSelector::Key("second.cppm")).Exists());
+    require(ui.Find(editor).Exists() && !ui.Find(UiSelector::Key("模块.cppm")).Exists());
     ui.Find(change).Tap(); ui.Pump(); require(selections == 1); // Dirty preflight rejects another picker.
     ui.Find(UiSelector::Key("action-save")).Tap();
     { std::ifstream file(first / "main.cppm"); std::string saved; file >> saved; require(saved == "edited"); }
@@ -56,7 +56,8 @@ int main() {
     pickerFails = false; auto valid = destination; destination = directory / "missing";
     ui.Find(change).Tap(); ui.Pump(); finish(); require(selections == 4 && ui.Find(editor).Exists());
     destination = valid; ui.Find(change).Tap(); ui.Pump(); finish();
-    require(selections == 5 && !ui.Find(editor).Exists() && ui.Find(UiSelector::Key("second.cppm")).Exists());
-    ui.Find(UiSelector::Key("second.cppm")).Tap(); require(ui.Find(editor).Exists());
+    require(selections == 5 && !ui.Find(editor).Exists() && ui.Find(UiSelector::Key("模块.cppm")).Exists());
+    ui.Find(UiSelector::Key("模块.cppm")).Tap(); require(ui.Find(editor).Exists());
+    require(ui.Find(UiSelector::Text("模块.cppm")).Exists());
     std::println("Delayed workspace picker preserves concurrent edits, cancellation and invalid targets before a successful switch: passed");
 }
