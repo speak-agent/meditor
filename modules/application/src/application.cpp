@@ -265,6 +265,7 @@ struct Record {
 }
 struct Application::Impl {
     static constexpr std::size_t MAX_ACTIVE_QUERIES {8}, MAX_RETAINED_QUERIES {16};
+    std::recursive_mutex executeMutex;
     static constexpr std::size_t MAX_QUERY_SNAPSHOT_BYTES {64 * 1024 * 1024}, MAX_QUERY_RESULT_BYTES {64 * 1024 * 1024};
     std::filesystem::path root;
     std::filesystem::path tools;
@@ -848,6 +849,7 @@ const Json& Application::metadata_() {
 Json Application::capabilities() const { return metadata_(); }
 
 Json Application::execute(const Json& request) {
+    const std::lock_guard<std::recursive_mutex> serialized(impl_->executeMutex);
     Json response = {{"schemaVersion", 1}, {"kind", "meditor.result"}, {"kindVersion", 1}, {"session", session_id()}, {"requestId", request.is_object() ? request.value("id", Json(nullptr)) : Json(nullptr)}, {"effects", Json::array()}};
     try {
         if (!request.is_object()) throw CommandError("invalid-params", "Request must be a JSON object");

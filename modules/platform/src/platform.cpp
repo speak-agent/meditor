@@ -4,12 +4,17 @@ module;
 #if defined(_WIN32)
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <afunix.h>
 #include <windows.h>
 #include <cstdio>
+#pragma comment(lib, "ws2_32.lib")
 #elif !defined(__EMSCRIPTEN__)
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -519,5 +524,239 @@ std::string redact(std::string text, const std::filesystem::path& workspace) {
     text = std::regex_replace(text, std::regex(R"((token|password|secret|api_key|access_token)=([^\s&]+))", std::regex::icase), "$1=<redacted>");
     text = std::regex_replace(text, std::regex(R"(([A-Za-z]:[\\/]|/(?:home|Users|tmp|var|opt|private|usr)/)[^\s\"<>]*)"), "<path>");
     return text;
+}
+
+namespace {
+#if !defined(__EMSCRIPTEN__)
+struct SocketLibrary {
+#if defined(_WIN32)
+    bool ready {};
+    SocketLibrary() { WSADATA data; ready = WSAStartup(MAKEWORD(2, 2), &data) == 0; }
+    ~SocketLibrary() { if (ready) WSACleanup(); }
+#endif
+};
+SocketLibrary& socket_library() { static SocketLibrary library; return library; }
+int wait_readable(int descriptor, std::chrono::milliseconds timeout, const std::stop_token& stop, bool& expired) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+        if (stop.stop_requested()) return 0;
+#if defined(_WIN32)
+        fd_set set; FD_ZERO(&set); FD_SET(descriptor, &set);
+        TIMEVAL slice {0, 500'000};
+        const int ready = select(0, &set, nullptr, nullptr, &slice);
+        if (ready == SOCKET_ERROR) return -1;
+        if (ready > 0) return 1;
+#else
+        pollfd slice {descriptor, POLLIN, 0};
+        const int ready = ::poll(&slice, 1, 50);
+        if (ready < 0) return -1;
+        if (ready > 0 && (slice.revents & (POLLIN | POLLHUP | POLLERR))) return 1;
+#endif
+        if (std::chrono::steady_clock::now() >= deadline) { expired = true; return 0; }
+    }
+}
+void close_socket(int descriptor) {
+    if (descriptor < 0) return;
+#if defined(_WIN32)
+    closesocket(descriptor);
+#else
+    ::close(descriptor);
+#endif
+}
+#endif
+}
+struct Channel::Impl {
+#if !defined(__EMSCRIPTEN__)
+    int descriptor {-1};
+    std::string pending;
+    bool closed {};
+    ~Impl() { close_socket(descriptor); }
+#endif
+};
+Channel::Channel() : impl_(std::make_unique<Impl>()) {}
+Channel::~Channel() { close(); }
+Channel::Channel(Channel&&) noexcept = default;
+Channel& Channel::operator=(Channel&&) noexcept = default;
+bool Channel::write_line(std::string_view data, std::chrono::milliseconds timeout, std::stop_token stop) {
+#if defined(__EMSCRIPTEN__)
+    (void)data; (void)timeout; (void)stop; throw std::runtime_error("Channels require a native platform adapter");
+#else
+    if (impl_->closed || impl_->descriptor < 0) return false;
+    std::string frame(data);
+    frame += '\n';
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::size_t written = 0;
+    while (written < frame.size()) {
+        if (stop.stop_requested() || std::chrono::steady_clock::now() >= deadline) return false;
+#if defined(_WIN32)
+        const int sent = ::send(impl_->descriptor, frame.data() + written, static_cast<int>(frame.size() - written), 0);
+        if (sent == SOCKET_ERROR) { impl_->closed = true; return false; }
+        written += static_cast<std::size_t>(sent);
+#else
+        const ssize_t sent = ::send(impl_->descriptor, frame.data() + written, frame.size() - written, MSG_NOSIGNAL);
+        if (sent < 0) {
+            if (errno == EINTR) continue;
+            impl_->closed = true; return false;
+        }
+        written += static_cast<std::size_t>(sent);
+#endif
+    }
+    return true;
+#endif
+}
+std::optional<std::string> Channel::read_line(std::chrono::milliseconds timeout, std::stop_token stop) {
+#if defined(__EMSCRIPTEN__)
+    (void)timeout; (void)stop; throw std::runtime_error("Channels require a native platform adapter");
+#else
+    if (impl_->closed) return std::nullopt;
+    for (;;) {
+        if (const auto newline = impl_->pending.find('\n'); newline != std::string::npos) {
+            std::string line = impl_->pending.substr(0, newline);
+            impl_->pending.erase(0, newline + 1);
+            return line;
+        }
+        bool expired {};
+        const int ready = wait_readable(impl_->descriptor, timeout, stop, expired);
+        if (ready < 0) { impl_->closed = true; return std::nullopt; }
+        if (expired || stop.stop_requested()) return std::nullopt;
+        if (ready == 0) continue;
+        char buffer[4096];
+#if defined(_WIN32)
+        const int received = ::recv(impl_->descriptor, buffer, sizeof(buffer), 0);
+        if (received == SOCKET_ERROR || received == 0) { impl_->closed = true; return std::nullopt; }
+        impl_->pending.append(buffer, static_cast<std::size_t>(received));
+#else
+        const ssize_t received = ::recv(impl_->descriptor, buffer, sizeof(buffer), 0);
+        if (received == 0) { impl_->closed = true; return std::nullopt; }
+        if (received < 0) { if (errno == EINTR) continue; impl_->closed = true; return std::nullopt; }
+        impl_->pending.append(buffer, static_cast<std::size_t>(received));
+#endif
+        if (impl_->pending.size() > 16 * 1024 * 1024) { impl_->closed = true; return std::nullopt; }
+    }
+#endif
+}
+bool Channel::ended() const {
+#if defined(__EMSCRIPTEN__)
+    return true;
+#else
+    return impl_->closed || impl_->descriptor < 0;
+#endif
+}
+void Channel::adopt(int descriptor) {
+#if !defined(__EMSCRIPTEN__)
+    impl_->descriptor = descriptor;
+#else
+    (void)descriptor;
+#endif
+}
+void Channel::close() {
+#if !defined(__EMSCRIPTEN__)
+    if (impl_ && !impl_->closed) {
+        close_socket(impl_->descriptor);
+        impl_->descriptor = -1;
+        impl_->closed = true;
+    }
+#endif
+}
+struct ChannelListener::Impl {
+#if !defined(__EMSCRIPTEN__)
+    int descriptor {-1};
+    std::filesystem::path socket_path;
+    ~Impl() {
+        if (descriptor >= 0) close_socket(descriptor);
+        if (!socket_path.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove(socket_path, ignored);
+        }
+    }
+#endif
+};
+ChannelListener::ChannelListener(const std::string& address) : impl_(std::make_unique<Impl>()) {
+#if defined(__EMSCRIPTEN__)
+    (void)address; throw std::runtime_error("Channels require a native platform adapter");
+#else
+    socket_library();
+    impl_->descriptor = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (impl_->descriptor < 0) throw std::runtime_error("Could not create the local channel socket");
+    sockaddr_un local {};
+    local.sun_family = AF_UNIX;
+    if (address.size() >= sizeof(local.sun_path)) { close_socket(impl_->descriptor); impl_->descriptor = -1; throw std::runtime_error("Local channel address is too long"); }
+    std::memcpy(local.sun_path, address.c_str(), address.size() + 1);
+    auto serving = [&] {
+        close_socket(impl_->descriptor); impl_->descriptor = -1;
+        throw std::runtime_error("Local channel address is already serving");
+    };
+    auto bind_or_steal = [&] { return ::bind(impl_->descriptor, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) == 0; };
+    if (bind_or_steal()) {
+        if (::listen(impl_->descriptor, 4) != 0) serving();
+    } else {
+        // Only steal the address when nothing answers there; a live server keeps it.
+        const int probe = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (probe >= 0) {
+            const bool answered = ::connect(probe, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) == 0;
+            close_socket(probe);
+            if (answered) serving();
+        }
+        std::error_code ignored;
+        std::filesystem::remove(address, ignored);
+        impl_->descriptor = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (impl_->descriptor < 0 || !bind_or_steal() || ::listen(impl_->descriptor, 4) != 0) serving();
+    }
+    impl_->socket_path = std::filesystem::u8path(address);
+#endif
+}
+ChannelListener::~ChannelListener() = default;
+std::unique_ptr<Channel> ChannelListener::accept(std::chrono::milliseconds timeout, std::stop_token stop) {
+#if defined(__EMSCRIPTEN__)
+    (void)timeout; (void)stop; throw std::runtime_error("Channels require a native platform adapter");
+#else
+    if (impl_->descriptor < 0) throw std::runtime_error("Local channel listener is closed");
+    bool expired {};
+    const int ready = wait_readable(impl_->descriptor, timeout, stop, expired);
+    if (ready <= 0) return nullptr;
+    const int connection = ::accept(impl_->descriptor, nullptr, nullptr);
+    if (connection < 0) throw std::runtime_error("Could not accept a local channel connection");
+    auto channel = std::make_unique<Channel>();
+    channel->adopt(connection);
+    return channel;
+#endif
+}
+std::unique_ptr<Channel> open_channel(const std::string& address, std::chrono::milliseconds timeout) {
+#if defined(__EMSCRIPTEN__)
+    (void)address; (void)timeout; throw std::runtime_error("Channels require a native platform adapter");
+#else
+    socket_library();
+    const int descriptor = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (descriptor < 0) return nullptr;
+    sockaddr_un local {};
+    local.sun_family = AF_UNIX;
+    if (address.size() >= sizeof(local.sun_path)) { close_socket(descriptor); return nullptr; }
+    std::memcpy(local.sun_path, address.c_str(), address.size() + 1);
+#if defined(_WIN32)
+    u_long unblocking = 1;
+    ioctlsocket(descriptor, FIONBIO, &unblocking);
+    const int result = ::connect(descriptor, reinterpret_cast<const sockaddr*>(&local), sizeof(local));
+    if (result == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
+        fd_set set; FD_ZERO(&set); FD_SET(descriptor, &set);
+        TIMEVAL slice {static_cast<long>(timeout.count() / 1000), static_cast<long>((timeout.count() % 1000) * 1000)};
+        if (::select(0, nullptr, &set, nullptr, &slice) <= 0) { close_socket(descriptor); return nullptr; }
+    } else if (result == SOCKET_ERROR) { close_socket(descriptor); return nullptr; }
+    u_long blocking = 0;
+    ioctlsocket(descriptor, FIONBIO, &blocking);
+#else
+    (void)timeout;
+    if (::connect(descriptor, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) != 0) { close_socket(descriptor); return nullptr; }
+#endif
+    auto channel = std::make_unique<Channel>();
+    channel->adopt(descriptor);
+    return channel;
+#endif
+}
+std::string local_channel_address(std::string_view key) {
+    std::string safe;
+    for (const char character : key)
+        safe += (std::isalnum(static_cast<unsigned char>(character)) || character == '-') ? character : '-';
+    const auto base = std::filesystem::temp_directory_path() / ("meditor-channel-" + safe + ".sock");
+    return path_to_utf8(base);
 }
 }

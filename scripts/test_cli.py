@@ -234,6 +234,15 @@ def main():
             assert not receipts.exists(), "About/notice queries must not execute tools"
             assert request("document.open", {"path": "../outside"}, ok=False)["code"] == "invalid-path"
             assert request("document.open", {"path": "missing"}, ok=False)["code"] == "not-found"
+            opened = request("document.open", {"path": "shared-session.cppm", "create": True})
+            request("document.edit", {"document": opened["document"], "revision": 1, "edits": [{"start": 0, "end": 0, "text": "shared unsaved buffer"}]})
+            attached = subprocess.run([str(binary), "--cli", "document.read", "--params", json.dumps({"document": opened["document"]}), "--workspace", str(project), "--data-root", str(data_root), "--format", "json"], env=child_environment, capture_output=True, text=True, encoding="utf-8", timeout=30)
+            assert attached.returncode == 0, attached.stderr
+            shared = json.loads(attached.stdout)
+            assert shared["ok"] and shared["data"]["text"] == "shared unsaved buffer", shared
+            assert not (project / "shared-session.cppm").exists(), "The shared buffer must stay unsaved"
+            request("document.save", {"document": opened["document"], "revision": 2})
+            (project / "shared-session.cppm").unlink()
             capabilities = request("capabilities")
             assert capabilities["languageTransport"] == {"notificationDelivery": "queued", "maxMessageBytes": 16 * 1024 * 1024, "maxQueuedBytes": 64 * 1024 * 1024, "maxQueuedMessages": 256, "writeTimeoutMs": 5000}
             assert set(capabilities["commands"]) == set(capabilities["commandSchemas"])

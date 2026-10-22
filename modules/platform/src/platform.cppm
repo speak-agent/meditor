@@ -31,6 +31,40 @@ public:
     std::optional<int> poll();
     void terminate();
 };
+class ChannelListener;
+class Channel {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+public:
+    Channel();
+    ~Channel();
+    Channel(Channel&&) noexcept;
+    Channel& operator=(Channel&&) noexcept;
+    Channel(const Channel&) = delete;
+    Channel& operator=(const Channel&) = delete;
+    bool write_line(std::string_view data, std::chrono::milliseconds timeout = std::chrono::seconds(5), std::stop_token stop = {});
+    std::optional<std::string> read_line(std::chrono::milliseconds timeout, std::stop_token stop = {});
+    bool ended() const;
+    void close();
+private:
+    friend class ChannelListener;
+    friend std::unique_ptr<Channel> open_channel(const std::string& address, std::chrono::milliseconds timeout);
+    void adopt(int descriptor);
+};
+std::unique_ptr<Channel> open_channel(const std::string& address, std::chrono::milliseconds timeout);
+class ChannelListener {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+public:
+    // Binds and listens; throws when the address is already serving.
+    explicit ChannelListener(const std::string& address);
+    ~ChannelListener();
+    ChannelListener(const ChannelListener&) = delete;
+    ChannelListener& operator=(const ChannelListener&) = delete;
+    std::unique_ptr<Channel> accept(std::chrono::milliseconds timeout, std::stop_token stop = {});
+};
+std::unique_ptr<Channel> open_channel(const std::string& address, std::chrono::milliseconds timeout);
+std::string local_channel_address(std::string_view key);
 std::string path_to_utf8(const std::filesystem::path& path);
 // Windows ordinal case folding, exact spelling elsewhere; aliases also need filesystem identity checks.
 bool same_path_spelling(const std::filesystem::path& left, const std::filesystem::path& right);

@@ -4,6 +4,7 @@ module meditor.cli;
 import std;
 import nlohmann.json;
 import meditor.application;
+import meditor.session;
 import meditor.platform;
 import meditor.settings;
 
@@ -89,9 +90,52 @@ int meditor::cli::run(int argc, char** argv) {
         if (!showHelp && stdio != serve) throw std::runtime_error("serve requires --stdio");
         localizer = command_localizer(languageOverride, settings, runtime);
         if (showHelp) { print_line("{}", localizer.text("cli.help")); return 0; }
+        {
+            std::optional<std::filesystem::path> sharedDataRoot;
+            try { sharedDataRoot = meditor::RuntimeDirectories::resolve(runtime).dataRoot; } catch (...) {}
+            if (sharedDataRoot) {
+                if (auto attached = meditor::SessionClient::attach(*sharedDataRoot, workspace, std::chrono::milliseconds(1500))) {
+                    const Json lost {{"schemaVersion", 1}, {"ok", false}, {"error", {{"code", "session-lost"}}}};
+                    const auto execute = [&attached, &lost](const Json& request) { return attached->forward(request).value_or(lost); };
+                    if (serve) {
+                        std::string line;
+                        for (;;) {
+                            const auto state = read_request_line(std::cin, line);
+                            if (state == RequestLine::End) break;
+                            if (state == RequestLine::TooLarge) {
+                                print_line("{}", Json({{"schemaVersion", 1}, {"ok", false}, {"error", {{"code", "request-too-large"}}}}).dump());
+                                std::cout.flush(); continue;
+                            }
+                            try { print_line("{}", execute(Json::parse(line)).dump()); }
+                            catch (...) { print_line("{}", Json({{"schemaVersion", 1}, {"ok", false}, {"error", {{"code", "invalid-json"}}}}).dump()); }
+                            std::cout.flush();
+                        }
+                        return 0;
+                    }
+                    auto result = execute({{"command", command}, {"params", params}});
+                    if (result.value("ok", false) && result["data"].is_object() && result["data"].contains("task")) {
+                        auto task = result["data"]["task"];
+                        do { result = execute({{"command", "task.wait"}, {"params", {{"task", task}, {"timeoutMs", 120000}}}}); } while (!result.value("ok", false) && result.value("error", Json::object()).value("code", "") == "timeout");
+                    }
+                    if (json) print_line("{}", result.dump());
+                    else if (result.value("ok", false)) print_line("{}", result.at("data").dump(2));
+                    else {
+                        const auto code = result["error"].value("code", "operation-failed"), id = "error." + code;
+                        print_line(std::cerr, "{}: {}", code, localizer.text(localizer.contains(id) ? id : "error.operation-failed"));
+                    }
+                    if (!result.value("ok", false)) return 1;
+                    if (result["data"].is_object() && result["data"].contains("exitCode")) return result["data"]["exitCode"].get<int>() == 0 ? 0 : 1;
+                    return 0;
+                }
+            }
+        }
         meditor::Application application(workspace, tools, settings, runtime);
         if (trust) application.execute({{"command", "workspace.trust"}, {"params", {{"allow", true}}}});
         if (serve) {
+            // A serve session without a live GUI hosts the shared endpoint so
+            // other CLI processes and agents can attach to the same documents.
+            std::optional<meditor::SessionServer> host;
+            try { host.emplace(application, meditor::RuntimeDirectories::resolve(runtime).dataRoot, workspace); } catch (const std::exception&) {}
             std::string line;
             for (;;) {
                 const auto state = read_request_line(std::cin, line);

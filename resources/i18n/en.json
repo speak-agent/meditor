@@ -53,6 +53,7 @@
   "error.language-message-too-large": "This document exceeds the language service transport limit. Editing and saving remain available.",
   "error.not-found": "The requested item does not exist",
   "error.operation-failed": "Operation failed",
+  "error.session-lost": "The shared editor session was lost; the window may have closed",
   "error.revision-conflict": "The document changed. Reload its current revision.",
   "error.settings-conflict": "Settings changed. Reload before updating.",
   "error.settings-unavailable": "A settings location is unavailable",

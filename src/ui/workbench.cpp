@@ -4,6 +4,7 @@ module meditor.ui.workbench;
 import std;
 import huxerui;
 import meditor.application;
+import meditor.session;
 import meditor.document;
 import meditor.platform;
 import meditor.ui.editor;
@@ -53,6 +54,7 @@ bool language_range(const Json& value, LanguageRow& row) {
 }
 struct WorkspaceModel {
     std::shared_ptr<meditor::Application> application;
+    std::unique_ptr<meditor::SessionServer> session;
     std::shared_ptr<meditor::Application> preferences;
     std::filesystem::path settingsFile;
     meditor::RuntimeOptions runtime;
@@ -178,7 +180,10 @@ struct WorkspaceModel {
         files.swap(nextFiles);
         name = application ? response["data"]["name"].get<std::string>() : meditor::path_to_utf8(root.filename());
         generation = response["workspaceGeneration"].get<std::uint64_t>();
-        close_language(); application = std::move(next); editors.clear(); tabs.clear(); active.clear(); selected = true;
+        close_language(); session.reset(); application = std::move(next); editors.clear(); tabs.clear(); active.clear(); selected = true;
+        try {
+            session = std::make_unique<meditor::SessionServer>(*application, meditor::RuntimeDirectories::resolve(runtime).dataRoot, root);
+        } catch (const std::exception&) { session.reset(); }
         busy = false; activeTask.clear(); taskKind.clear(); output.clear(); bottomPanel.clear(); searchOpen = false;
         searchTotal = 0; searchReplaced.reset(); searchErrorKey.clear();
         notice("status.workspaceOpened"); return true;
