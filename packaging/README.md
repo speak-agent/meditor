@@ -15,6 +15,15 @@ The root `build.mcpp` uses the independently testable `meditor-distribution` pla
 
 A development build without prepared tools is allowed and reports their absence through `meditor --cli doctor`. Native packaging requires prepared tools. The current Linux directory-package probe found that earlier dependency artifacts retained development interpreter/RPATH values; relocation on the build machine is insufficient evidence until this is corrected and tested without those paths. Preparing a payload does not certify an installer: clean-machine runtime, signatures, upgrade/uninstall, source examples and artifact privacy remain required release checks.
 
+After packaging a release candidate, anonymize residual build paths, then scan:
+
+```sh
+python3 scripts/sanitize_package.py --directory <package-directory>
+python3 scripts/check_artifact_privacy.py --directory <package-directory>
+```
+
+`sanitize_package.py` overwrites foreign machine paths byte-for-byte with same-length placeholders; file sizes, ELF layout and load behavior stay unchanged. It runs after `mcpp pack` (self-contained bundles already carry a relative loader invocation and RPATH) and before the privacy gate. Do not relax the scan instead of running it.
+
 ## Candidate source and privacy checks
 
 ```sh

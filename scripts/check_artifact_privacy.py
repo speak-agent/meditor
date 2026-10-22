@@ -19,6 +19,7 @@ WIDE_PATH_START = re.compile(
     re.IGNORECASE,
 )
 
+PLACEHOLDER_NAMES = {b"runner", b"runneradmin", b"actions", b"build", b"buildd", b"vsts", b"user", b"username", b"example", b"yourname"}
 
 def private_needles():
     paths = [Path.home(), Path(__file__).resolve().parents[1]]
@@ -41,10 +42,9 @@ def private_needles():
 
 
 def personal_build_path(data):
-    placeholders = {b"runner", b"runneradmin", b"actions", b"build", b"buildd", b"vsts", b"user", b"username", b"example", b"yourname"}
     for match in PERSONAL_PATH.finditer(data):
         name = match[1].lower()
-        if name not in placeholders and not (name.startswith(b"<") and name.endswith(b">")) and not name.startswith(b"$"):
+        if name not in PLACEHOLDER_NAMES and not (name.startswith(b"<") and name.endswith(b">")) and not name.startswith(b"$"):
             return True
     return False
 
