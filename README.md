@@ -13,4 +13,4 @@ mcpp build
 mcpp run -p meditor-gui -- --workspace .
 ```
 
-[Design and acceptance criteria](.agnets/docs/2026-10-22-meditor-project-design.md) · [Development rules](AGENTS.md)
+[Design and acceptance criteria](.agents/docs/2026-10-22-meditor-project-design.md) · [Development rules](AGENTS.md)
