@@ -4,6 +4,7 @@ module meditor.ui.workbench;
 import std;
 import huxerui;
 import meditor.application;
+import meditor.document;
 import meditor.ui.editor;
 
 namespace meditor::ui {
@@ -268,6 +269,7 @@ View workbench() {
                 Button(t("action.trust")).Key("action-trust").OnClick([run] { run("workspace.trust", {{"allow", true}}); }),
             }.With(Padding(8), Spacing(6));
             auto center = Column {toolbar, tabs,
+                !data->active.empty() && data->editors.at(data->active)->text_format().loneCarriageReturns ? View(Text(t("editor.unsupportedLineEndings"), TextRole::Label).Key("format-read-only").With(Padding(8))) : View{},
                 !data->active.empty() && data->editors.at(data->active)->highlighting_limited() ? View(Text(t("editor.highlightLimited"), TextRole::Label).Key("highlight-limited").With(Padding(8))) : View{},
                 std::move(editor),
                 data->output.empty() ? View{} : View(ScrollView {SelectionArea {Text(data->output).Style({.font = Font::Monospace(12)})}}.With(Frame{.height = 160}, Padding(12), Background(pane)))
@@ -348,9 +350,16 @@ View workbench() {
         const auto languageLabel = language == "cpp" ? std::string("C++23 · Modules") :
             language == "markdown" ? std::string("Markdown") : language == "json" ? std::string("JSON") :
             language == "jsonc" ? std::string("JSONC") : language == "toml" ? std::string("TOML") : t("editor.plainText");
+        std::string formatLabel;
+        if (!data->active.empty()) {
+            const auto format = data->editors.at(data->active)->text_format();
+            formatLabel = format.utf8Bom ? " · UTF-8 BOM" : " · UTF-8";
+            formatLabel += format.lineEnding == LineEnding::CrLf ? " · CRLF" : " · LF";
+            if (format.mixedLineEndings) formatLabel += " · " + t("editor.mixedLineEndings");
+        }
         auto page = Column {header, Divider(), body,
             Row {Text(data->status_text(), TextRole::Label).Key("status-text").With(Grow{1}),
-                compact ? View{} : View(Text(languageLabel, TextRole::Label).Key("document-language").With(Foreground(muted))),
+                compact ? View{} : View(Text(languageLabel + formatLabel, TextRole::Label).Key("document-language").With(Foreground(muted))),
                 Button(t("about.entry")).Key("about-entry").OnClick(showAbout),
                 Button(t("settings.title")).Key("settings-entry").OnClick(showSettings)
             }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))

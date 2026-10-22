@@ -130,10 +130,16 @@ struct Task {
 struct Record {
     std::string path;
     Document document;
+    TextFormat format;
+    void refresh_format() {
+        auto next = inspect_text_format(document.text());
+        if (!next.lineBreaks) next.lineEnding = format.lineEnding;
+        format = next;
+    }
     bool existed {};
     std::uint64_t synced {};
     int lspVersion {};
-    Record(std::string name, std::string text, bool exists) : path(std::move(name)), document(std::move(text)), existed(exists) {}
+    Record(std::string name, std::string text, bool exists) : path(std::move(name)), document(std::move(text)), format(inspect_text_format(document.text())), existed(exists) {}
 };
 }
 struct Application::Impl {
@@ -170,6 +176,7 @@ struct Application::Impl {
     }
     Json summary(const std::string& id, const Record& record, bool includeText = false) const {
         Json result = {{"document", id}, {"path", record.path}, {"revision", record.document.revision()}, {"dirty", record.document.dirty()}, {"bytes", record.document.size()}};
+        result["format"] = {{"encoding", "utf-8"}, {"bom", record.format.utf8Bom}, {"lineEnding", record.format.lineEnding == LineEnding::CrLf ? "crlf" : "lf"}, {"mixedLineEndings", record.format.mixedLineEndings}, {"loneCarriageReturns", record.format.loneCarriageReturns}, {"lineBreaks", record.format.lineBreaks}};
         if (includeText) result["text"] = record.document.text();
         return result;
     }
@@ -268,6 +275,7 @@ struct Application::Impl {
                 for (std::size_t byte = 0;;) {
                     auto end = text.find('\n', byte); auto length = end == text.npos ? text.size() - byte : end - byte;
                     auto line = std::string_view(text).substr(byte, length); if (line.ends_with('\r')) line.remove_suffix(1);
+                    if (!byte && line.starts_with("\xef\xbb\xbf")) line.remove_prefix(3);
                     lines.push_back(line); if (end == text.npos) break; byte = end + 1;
                 }
                 const auto language = syntax::detect(record.path); syntax::Cache cache; cache.update(lines, language);
@@ -276,7 +284,8 @@ struct Application::Impl {
                 for (auto row = first; row < lines.size() && row - first < static_cast<std::uint64_t>(count); ++row) {
                     for (auto token : cache.tokens(row)) {
                         if (tokens.size() == 4096) { truncated = true; break; }
-                        tokens.push_back({{"line", row}, {"start", token.start}, {"end", token.end}, {"role", syntax::role_name(token.role)}});
+                        const auto bomOffset = !row && text.starts_with("\xef\xbb\xbf") ? 3U : 0U;
+                        tokens.push_back({{"line", row}, {"start", token.start + bomOffset}, {"end", token.end + bomOffset}, {"role", syntax::role_name(token.role)}});
                     }
                     if (truncated) break;
                     ++processed;
@@ -305,6 +314,7 @@ struct Application::Impl {
                 auto text = record.document.text(); write_file_atomic(path, text); record.document.mark_saved(text); record.existed = true;
                 if (language && record.synced) language->notify("textDocument/didSave", {{"textDocument", {{"uri", make_uri(path)}}}});
             } else throw CommandError("unknown-command", "Unknown document command");
+            record.refresh_format();
             return summary(id, record);
         }
         if (command == "doctor") {

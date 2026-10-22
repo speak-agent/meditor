@@ -103,6 +103,8 @@ def main():
         source = project / "hello.cppm"
         original = "export module hello;\nexport int value() { return 42; }\n你好🙂\r\n"
         source.write_bytes(original.encode())
+        bom_original = "\ufeffexport module 你好;\r\nmodule;\n"
+        (project / "bom.cppm").write_bytes(bom_original.encode())
         syntax_samples = {
             "README.md": ("# 标题 🙂\n```cpp\nexport module example;\n```\n", "markdown", "heading"),
             "example.json": ('{"键": "🙂", "active": true}', "json", "key"),
@@ -177,6 +179,17 @@ def main():
             settings_file.write_bytes(intact)
             assert request("document.open", {"path": "hello.cppm", "unexpected": True}, ok=False)["code"] == "invalid-params"
             assert request("workspace.trust", {"allow": "true"}, ok=False)["code"] == "invalid-params"
+            bom = request("document.open", {"path": "bom.cppm"})
+            assert bom["format"]["bom"] and bom["format"]["mixedLineEndings"] and bom["format"]["lineEnding"] == "crlf"
+            bom_id = bom["document"]
+            assert request("document.highlight", {"document": bom_id})["tokens"][0] == {"line": 0, "start": 3, "end": 9, "role": "keyword"}
+            assert request("document.read", {"document": bom_id})["text"] == bom_original
+            # CLI offsets and edit bytes stay raw; only GUI presentation normalizes.
+            request("document.edit", {"document": bom_id, "revision": 1, "edits": [{"start": 3, "end": 3, "text": "// "}]})
+            assert request("document.read", {"document": bom_id})["text"].startswith("\ufeff// export")
+            request("document.undo", {"document": bom_id, "revision": 2})
+            request("document.save", {"document": bom_id, "revision": 3})
+            assert (project / "bom.cppm").read_bytes() == bom_original.encode()
             document = request("document.open", {"path": "hello.cppm"})
             doc = document["document"]
             assert request("document.read", {"document": doc})["text"] == original

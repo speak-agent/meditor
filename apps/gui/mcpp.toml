@@ -6,6 +6,7 @@ license = "GPL-3.0-only"
 platforms = ["linux", "windows", "macos", "android", "ios", "emscripten"]
 
 [dependencies]
+meditor-document = { path = "../../modules/document" }
 meditor-application = { path = "../../modules/application" }
 huxerui.huxerui = { git = "https://github.com/Sunrisepeak/HuxerUI.git", branch = "meditor" }
 

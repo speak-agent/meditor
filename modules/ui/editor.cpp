@@ -4,6 +4,7 @@ module meditor.ui.editor;
 import std;
 import huxerui;
 import meditor.application;
+import meditor.document;
 import meditor.syntax;
 
 namespace meditor::ui {
@@ -22,6 +23,24 @@ std::size_t byte_at(const std::string& text, TextOffset offset) {
     throw std::runtime_error("Invalid UTF-16 boundary");
 }
 TextOffset units(std::string_view text) { TextOffset count {}; for (unsigned char ch : text) if ((ch & 0xc0) != 0x80) count += ch >= 0xf0 ? 2 : 1; return count; }
+void normalize_value(TextEditingValue& value, std::optional<std::vector<LineEnding>>& endings, LineEnding preferred) {
+    if (!endings || value.text.find('\r') == std::string::npos) return;
+    std::vector<TextOffset> removed; std::vector<LineEnding> normalizedEndings; TextOffset offset {}; std::size_t line {};
+    for (std::size_t i = 0; i < value.text.size(); ++i) {
+        const auto c = static_cast<unsigned char>(value.text[i]);
+        if (c == '\r') {
+            if (i + 1 < value.text.size() && value.text[i + 1] == '\n') removed.push_back(offset);
+            else { value.text[i] = '\n'; normalizedEndings.push_back(preferred); }
+        } else if (c == '\n') normalizedEndings.push_back(endings->at(line++));
+        if ((c & 0xc0) != 0x80) offset += c >= 0xf0 ? 2 : 1;
+    }
+    if (line != endings->size()) throw std::runtime_error("Invalid newline metadata");
+    *endings = std::move(normalizedEndings);
+    auto map = [&](TextOffset position) { return position - static_cast<TextOffset>(std::lower_bound(removed.begin(), removed.end(), position) - removed.begin()); };
+    value.selection = {map(value.selection.anchor), map(value.selection.active)};
+    if (value.composition) value.composition = TextRange{map(value.composition->start), map(value.composition->end)};
+    value.text = normalize_line_endings(value.text, LineEnding::Lf);
+}
 struct Line { std::size_t byte {}; TextOffset unit {}; std::string text; };
 }
 struct EditorState::Impl : TextInputClient, TextSelectionClient {
@@ -29,7 +48,10 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     std::string document;
     std::function<void()> changed;
     TextEditingValue value;
-    std::optional<TextEditingValue> baseline;
+    TextPresentation presentation;
+    TextFormat format;
+    struct Baseline { TextEditingValue value; std::vector<LineEnding> endings; bool bom {}; };
+    std::optional<Baseline> baseline;
     std::uint64_t documentRevision {};
     std::uint64_t compositionSequence {};
     std::string compositionGroup;
@@ -68,41 +90,74 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         auto data = response.at("data"); auto revision = data.at("revision").get<std::uint64_t>();
         if (revision == documentRevision) return;
         language = syntax::detect(data.at("path").get<std::string>());
-        value.text = data.at("text").get<std::string>(); documentRevision = revision;
+        presentation = TextPresentation(data.at("text").get<std::string>());
+        value.text = presentation.text(); format = presentation.format();
+        format.lineEnding = data.at("format").at("lineEnding") == "crlf" ? LineEnding::CrLf : LineEnding::Lf;
+        documentRevision = revision;
         auto length = units(value.text); value.selection.anchor = std::min(value.selection.anchor, length); value.selection.active = std::min(value.selection.active, length);
         ++input.revision; ++input.content_revision; rebuild_();
     }
-    bool publish_(const TextEditingValue& next, const std::string& historyGroup = {}) {
-        const bool contentChanged = next.text != value.text;
+    std::vector<LineEnding> line_endings_() const { auto items = presentation.line_endings(); return {items.begin(), items.end()}; }
+    bool publish_(TextEditingValue next, const std::string& historyGroup = {}, std::optional<std::vector<LineEnding>> endings = {}, std::optional<bool> bom = {}) {
+        if (!valid_utf8(next.text)) return false;
+        if (format.loneCarriageReturns) {
+            if (next.text != value.text || next.composition || (endings && !std::ranges::equal(*endings, presentation.line_endings()))) return false;
+        } else normalize_value(next, endings, format.lineEnding);
+        const bool contentChanged = next.text != value.text || (endings && !std::ranges::equal(*endings, presentation.line_endings())) || (bom && *bom != format.utf8Bom);
         if (contentChanged) {
+            if (!endings) return false;
+            auto raw = encode_text_format(next.text, *endings, bom.value_or(format.utf8Bom));
+            const auto& before = presentation.raw_text();
             std::size_t prefix {}, suffix {};
-            while (prefix < value.text.size() && prefix < next.text.size() && value.text[prefix] == next.text[prefix]) ++prefix;
-            while (prefix && prefix < value.text.size() && (static_cast<unsigned char>(value.text[prefix]) & 0xc0) == 0x80) --prefix;
-            while (suffix < value.text.size() - prefix && suffix < next.text.size() - prefix && value.text[value.text.size() - suffix - 1] == next.text[next.text.size() - suffix - 1]) ++suffix;
-            while (suffix && value.text.size() > suffix && (static_cast<unsigned char>(value.text[value.text.size() - suffix]) & 0xc0) == 0x80) --suffix;
-            auto reply = application->execute({{"command", "document.edit"}, {"params", {{"document", document}, {"revision", documentRevision}, {"historyGroup", historyGroup}, {"edits", Json::array({{{"start", prefix}, {"end", value.text.size() - suffix}, {"text", next.text.substr(prefix, next.text.size() - prefix - suffix)}}})}}}});
+            while (prefix < before.size() && prefix < raw.size() && before[prefix] == raw[prefix]) ++prefix;
+            while (prefix && prefix < before.size() && (static_cast<unsigned char>(before[prefix]) & 0xc0) == 0x80) --prefix;
+            while (suffix < before.size() - prefix && suffix < raw.size() - prefix && before[before.size() - suffix - 1] == raw[raw.size() - suffix - 1]) ++suffix;
+            while (suffix && before.size() > suffix && (static_cast<unsigned char>(before[before.size() - suffix]) & 0xc0) == 0x80) --suffix;
+            const auto inserted = raw.substr(prefix, raw.size() - prefix - suffix);
+            TextPresentation prepared(std::move(raw));
+            if (next.text.starts_with("\xef\xbb\xbf") && prepared.text() == next.text.substr(3)) {
+                next.text.erase(0, 3);
+                auto map = [](TextOffset position) { return std::max<TextOffset>(0, position - 1); };
+                next.selection = {map(next.selection.anchor), map(next.selection.active)};
+                if (next.composition) next.composition = TextRange{map(next.composition->start), map(next.composition->end)};
+            }
+            auto reply = application->execute({{"command", "document.edit"}, {"params", {{"document", document}, {"revision", documentRevision}, {"historyGroup", historyGroup}, {"edits", Json::array({{{"start", prefix}, {"end", before.size() - suffix}, {"text", inserted}}})}}}});
             if (!reply.value("ok", false)) { refresh_(); return false; }
             documentRevision = reply["data"]["revision"]; ++input.content_revision;
+            presentation = std::move(prepared); format = presentation.format();
+            format.lineEnding = reply["data"]["format"]["lineEnding"] == "crlf" ? LineEnding::CrLf : LineEnding::Lf;
         }
         revealCaret = revealCaret || next.text != value.text || next.selection != value.selection;
-        value = next; ++input.revision; if (contentChanged) rebuild_();
+        value = std::move(next); ++input.revision; if (contentChanged) rebuild_();
         if (changed) changed();
         return true;
     }
-    void replace_(TextEditingValue& next, TextRange range, const std::string& text) {
+    void replace_(TextEditingValue& next, TextRange range, const std::string& text, std::vector<LineEnding>& endings, std::span<const LineEnding> preserved = {}) {
         auto start = byte_at(next.text, range.start), end = byte_at(next.text, range.end);
         if (start > end) throw std::runtime_error("Invalid range");
-        next.text.replace(start, end - start, text); auto caret = range.start + units(text); next.selection = {caret, caret};
+        const auto first = static_cast<std::size_t>(std::count(next.text.begin(), next.text.begin() + start, '\n'));
+        const auto removed = static_cast<std::size_t>(std::count(next.text.begin() + start, next.text.begin() + end, '\n'));
+        auto inserted = text;
+        for (std::size_t i = 0; i < inserted.size(); ++i) if (inserted[i] == '\r' && (i + 1 == inserted.size() || inserted[i + 1] != '\n')) inserted[i] = '\n';
+        const auto added = static_cast<std::size_t>(std::count(inserted.begin(), inserted.end(), '\n'));
+        endings.erase(endings.begin() + first, endings.begin() + first + removed);
+        if (preserved.empty()) endings.insert(endings.begin() + first, added, format.lineEnding);
+        else {
+            if (preserved.size() != added) throw std::runtime_error("Invalid newline metadata");
+            endings.insert(endings.begin() + first, preserved.begin(), preserved.end());
+        }
+        next.text.replace(start, end - start, inserted); auto caret = range.start + units(inserted); next.selection = {caret, caret};
     }
-    TextInputConfiguration Configuration() const override { TextInputConfiguration config; config.multiline = true; return config; }
+    TextInputConfiguration Configuration() const override { TextInputConfiguration config; config.multiline = true; config.read_only = format.loneCarriageReturns; return config; }
     TextInputState State() const override { auto result = input; result.selection = value.selection; result.composition = value.composition; return result; }
     TextInputState BeginTextInput(TextInputSessionId session) override { input.session_id = session; ++input.revision; return State(); }
     TextInputApplyResult ApplyTextInput(const TextInputCommandBatch& batch) override {
         if (batch.session_id != input.session_id) return {TextInputResultCode::SessionMismatch};
         if (batch.commands.empty()) return {TextInputResultCode::Rejected};
-        auto next = value; auto original = baseline;
+        auto next = value; auto original = baseline; auto endings = line_endings_(); bool bom = format.utf8Bom;
         try {
             for (const auto& command : batch.commands) {
+                if (format.loneCarriageReturns && command.kind != TextInputCommandKind::SetSelection) return {TextInputResultCode::Rejected};
                 auto range = command.target.value_or(next.composition.value_or(next.selection.Range()));
                 if (command.coordinate_space == TextInputCoordinateSpace::Composition && command.target) {
                     if (!next.composition) throw std::runtime_error("Missing composition");
@@ -114,18 +169,18 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
                     if (!command.selection_after) throw std::runtime_error("Missing selection"); next.selection = *command.selection_after; break;
                 case TextInputCommandKind::BeginComposition:
                     if (next.composition || !command.target) throw std::runtime_error("Invalid composition start");
-                    original = next; next.composition = range; break;
+                    original = Baseline{next, endings, bom}; next.composition = range; break;
                 case TextInputCommandKind::UpdateComposition: {
-                    if (!original) original = next;
-                    auto old = next.composition; replace_(next, range, command.text);
+                    if (!original) original = Baseline{next, endings, bom};
+                    auto old = next.composition; replace_(next, range, command.text, endings);
                     next.composition = old ? TextRange{old->start, old->end + units(command.text) - range.Length()} : TextRange{range.start, range.start + units(command.text)};
                     break;
                 }
                 case TextInputCommandKind::CommitText:
-                    replace_(next, range, command.text); next.composition.reset(); original.reset(); break;
+                    replace_(next, range, command.text, endings); next.composition.reset(); original.reset(); break;
                 case TextInputCommandKind::FinishComposition: next.composition.reset(); original.reset(); break;
                 case TextInputCommandKind::CancelComposition:
-                    if (original) next = *original; next.composition.reset(); original.reset(); break;
+                    if (original) { next = original->value; endings = original->endings; bom = original->bom; } next.composition.reset(); original.reset(); break;
                 case TextInputCommandKind::DeleteSurrounding: {
                     if (command.delete_before < 0 || command.delete_after < 0) throw std::runtime_error("Invalid delete");
                     auto selected = next.selection.Range(); auto a = selected.start, b = selected.end;
@@ -136,7 +191,10 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
                         a = units(std::string_view(next.text).substr(0, left)); b = units(std::string_view(next.text).substr(0, right));
                     } else { a = std::max<TextOffset>(0, a - command.delete_before); b = std::min(units(next.text), b + command.delete_after); }
                     auto selectedText = AttributedText(next.text).TextInRange(selected);
-                    replace_(next, {a, b}, selectedText); next.selection = {a, a + selected.Length()}; next.composition.reset(); original.reset(); break;
+                    auto firstEnding = static_cast<std::size_t>(std::count(next.text.begin(), next.text.begin() + byte_at(next.text, selected.start), '\n'));
+                    auto count = static_cast<std::size_t>(std::count(selectedText.begin(), selectedText.end(), '\n'));
+                    std::vector<LineEnding> selectedEndings(endings.begin() + firstEnding, endings.begin() + firstEnding + count);
+                    replace_(next, {a, b}, selectedText, endings, selectedEndings); next.selection = {a, a + selected.Length()}; next.composition.reset(); original.reset(); break;
                 }
                 }
                 if (command.selection_after) next.selection = *command.selection_after;
@@ -144,7 +202,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
                 if (next.composition) { byte_at(next.text, next.composition->start); byte_at(next.text, next.composition->end); }
             }
             if ((original || baseline) && compositionGroup.empty()) compositionGroup = compositionPrefix + std::to_string(++compositionSequence);
-            if (!publish_(next, compositionGroup)) return {TextInputResultCode::Rejected};
+            if (!publish_(next, compositionGroup, std::move(endings), bom)) return {TextInputResultCode::Rejected};
             baseline = original;
             if (!next.composition) compositionGroup.clear();
             return {TextInputResultCode::Ok};
@@ -192,7 +250,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         if (control && (event.key == Key::Z || event.key == Key::Y)) {
             application->execute({{"command", event.key == Key::Y || event.modifiers.shift ? "document.redo" : "document.undo"}, {"params", {{"document", document}, {"revision", documentRevision}}}}); refresh_(); if (changed) changed(); return TextInputKeyResult::Handled;
         }
-        auto next = value; auto selection = next.selection.Range(); auto caret = next.selection.active;
+        auto next = value; auto endings = line_endings_(); auto selection = next.selection.Range(); auto caret = next.selection.active;
         auto move = [&](TextOffset target) { if (!event.modifiers.shift) next.selection.anchor = target; next.selection.active = target; };
         auto previous = [&](TextOffset offset) { if (!offset) return offset; auto byte = byte_at(next.text, offset); --byte; while (byte && (static_cast<unsigned char>(next.text[byte]) & 0xc0) == 0x80) --byte; return units(std::string_view(next.text).substr(0, byte)); };
         auto following = [&](TextOffset offset) { auto byte = byte_at(next.text, offset); if (byte == next.text.size()) return offset; ++byte; while (byte < next.text.size() && (static_cast<unsigned char>(next.text[byte]) & 0xc0) == 0x80) ++byte; return units(std::string_view(next.text).substr(0, byte)); };
@@ -201,33 +259,33 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         else if (event.key == Key::Home) { auto [row, x] = location_(caret); move(lines[row].unit); }
         else if (event.key == Key::End) { auto [row, x] = location_(caret); move(lines[row].unit + units(lines[row].text)); }
         else if (event.key == Key::ArrowUp || event.key == Key::ArrowDown) { auto [row, x] = location_(caret); auto target = event.key == Key::ArrowUp ? (row ? row - 1 : 0) : std::min(row + 1, lines.size() - 1); auto hit = QueryTextInputPosition(input.session_id, {64 + x, 10 + (static_cast<float>(target) - topLine) * lineHeight + 1}); move(hit.position.offset); }
-        else if (event.key == Key::Backspace) replace_(next, selection.IsCollapsed() ? TextRange{previous(caret), caret} : selection, "");
-        else if (event.key == Key::Delete) replace_(next, selection.IsCollapsed() ? TextRange{caret, following(caret)} : selection, "");
-        else if (event.key == Key::Enter) replace_(next, selection, "\n");
-        else if (event.key == Key::Tab) replace_(next, selection, "    ");
+        else if (event.key == Key::Backspace) replace_(next, selection.IsCollapsed() ? TextRange{previous(caret), caret} : selection, "", endings);
+        else if (event.key == Key::Delete) replace_(next, selection.IsCollapsed() ? TextRange{caret, following(caret)} : selection, "", endings);
+        else if (event.key == Key::Enter) replace_(next, selection, "\n", endings);
+        else if (event.key == Key::Tab) replace_(next, selection, "    ", endings);
         else return TextInputKeyResult::Unhandled;
-        publish_(next); return TextInputKeyResult::Handled;
+        publish_(next, {}, std::move(endings)); return TextInputKeyResult::Handled;
     }
     bool CanPerformTextEditingAction(TextEditingAction action, PlatformClipboard* clipboard) const override {
-        if (value.composition) return false;
+        if (value.composition || (format.loneCarriageReturns && (action == TextEditingAction::Cut || action == TextEditingAction::Paste))) return false;
         if (action == TextEditingAction::SelectAll) return !value.text.empty();
         return clipboard && (action == TextEditingAction::Paste || !value.selection.IsCollapsed());
     }
     bool PerformTextEditingAction(TextEditingAction action, PlatformClipboard* clipboard) override {
         if (!CanPerformTextEditingAction(action, clipboard)) return false;
-        auto next = value;
+        auto next = value; auto endings = line_endings_();
         if (action == TextEditingAction::SelectAll) next.selection = {0, units(next.text)};
         else if (action == TextEditingAction::Paste) {
             auto text = clipboard->ReadText(); if (!text) return false;
-            replace_(next, next.selection.Range(), *text);
+            replace_(next, next.selection.Range(), *text, endings);
         } else {
             auto range = next.selection.Range();
             auto text = next.text.substr(byte_at(next.text, range.start), byte_at(next.text, range.end) - byte_at(next.text, range.start));
             if (!clipboard->WriteText(text)) return false;
             if (action == TextEditingAction::Copy) return true;
-            replace_(next, range, "");
+            replace_(next, range, "", endings);
         }
-        return publish_(next);
+        return publish_(next, {}, std::move(endings));
     }
     bool ClearSelection() override {
         if (value.selection.IsCollapsed()) return false;
@@ -354,7 +412,8 @@ EditorState::EditorState(std::shared_ptr<Application> application, std::string d
 void EditorState::refresh() { impl_->refresh_(); }
 void EditorState::undo() { impl_->application->execute({{"command", "document.undo"}, {"params", {{"document", impl_->document}, {"revision", impl_->documentRevision}}}}); impl_->refresh_(); if (impl_->changed) impl_->changed(); }
 void EditorState::redo() { impl_->application->execute({{"command", "document.redo"}, {"params", {{"document", impl_->document}, {"revision", impl_->documentRevision}}}}); impl_->refresh_(); if (impl_->changed) impl_->changed(); }
-void EditorState::insert(std::string text) { auto next = impl_->value; impl_->replace_(next, next.selection.Range(), text); impl_->publish_(next); }
+void EditorState::insert(std::string text) { auto next = impl_->value; auto endings = impl_->line_endings_(); impl_->replace_(next, next.selection.Range(), text, endings); impl_->publish_(next, {}, std::move(endings)); }
+TextFormat EditorState::text_format() const { return impl_->format; }
 std::string EditorState::language_id() const { return std::string(syntax::language_name(impl_->language)); }
 bool EditorState::highlighting_limited() const { return impl_->syntaxCache.limited(); }
 std::string EditorState::document_id() const { return impl_->document; }

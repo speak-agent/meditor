@@ -40,6 +40,8 @@ def main():
     parser.add_argument("--language", choices=["en", "zh"], default="en")
     parser.add_argument("--syntax", choices=["cpp", "markdown", "json", "toml"], default="cpp")
     parser.add_argument("--theme", choices=["dark", "light"], default="dark")
+    parser.add_argument("--bom", action="store_true")
+    parser.add_argument("--crlf", action="store_true")
     args = parser.parse_args()
     if args.binary:
         binary = args.binary.resolve()
@@ -104,6 +106,11 @@ def main():
             "toml": ("mcpp.toml", '[package]\nname = "hello-modules"\nversion = "0.1.0"\n\n# Modules project\n[dependencies]\njson = "3.12.0"\n'),
         }
         filename, original = samples[args.syntax]
+        if args.crlf:
+            original = original.replace("\n", "\r\n")
+        if args.bom:
+            original = "\ufeff" + original
+        replacement = ("\ufeff" if args.bom else "") + "x"
         source = root / filename
         source.write_bytes(original.encode())
         (root / "settings.json").write_text(json.dumps({"schemaVersion": 1, "revision": 1, "values": {"theme": args.theme, "reducedMotion": False, "language": args.language}}), encoding="utf-8")
@@ -156,13 +163,18 @@ def main():
 
             chord("a"); key("x", 1); key("x", 0); x.XSync(display, 0)
             chord("s")
-            wait_for(lambda: source.read_bytes() == b"x")
+            wait_for(lambda: source.read_bytes() == replacement.encode())
             chord("z"); chord("s")
             wait_for(lambda: source.read_bytes() == original.encode())
             chord("y"); chord("s")
-            wait_for(lambda: source.read_bytes() == b"x")
+            wait_for(lambda: source.read_bytes() == replacement.encode())
             chord("z"); chord("s")
             wait_for(lambda: source.read_bytes() == original.encode())
+            if args.crlf:
+                chord("a"); key("x", 1); key("x", 0); key("Return", 1); key("Return", 0); x.XSync(display, 0)
+                chord("s"); wait_for(lambda: source.read_bytes() == (replacement + "\r\n").encode())
+                chord("z"); chord("s"); wait_for(lambda: source.read_bytes() == replacement.encode())
+                chord("z"); chord("s"); wait_for(lambda: source.read_bytes() == original.encode())
             if args.screenshot:
                 args.screenshot.parent.mkdir(parents=True, exist_ok=True)
                 subprocess.run(["import", "-window", hex(window), str(args.screenshot)], check=True, timeout=10)

@@ -5,6 +5,32 @@ export import meditor.syntax;
 import std;
 
 export namespace meditor {
+enum class LineEnding { Lf, CrLf };
+struct TextFormat {
+    bool utf8Bom {};
+    LineEnding lineEnding {LineEnding::Lf};
+    bool mixedLineEndings {};
+    bool loneCarriageReturns {};
+    std::size_t lineBreaks {};
+};
+TextFormat inspect_text_format(std::string_view text);
+std::string normalize_line_endings(std::string_view text, LineEnding ending);
+std::string encode_text_format(std::string_view display, std::span<const LineEnding> endings, bool utf8Bom);
+// Immutable raw/display snapshot. GUI offsets address BOM-free, LF display bytes;
+// document and CLI offsets continue to address the original UTF-8 file bytes.
+class TextPresentation {
+    std::string raw_, text_;
+    std::vector<std::size_t> crlf_;
+    std::vector<LineEnding> endings_;
+    TextFormat format_;
+public:
+    explicit TextPresentation(std::string raw = {});
+    const std::string& raw_text() const noexcept;
+    const std::string& text() const noexcept;
+    TextFormat format() const noexcept;
+    std::span<const LineEnding> line_endings() const noexcept;
+    std::size_t raw_offset(std::size_t displayByte) const;
+};
 struct Position {
     std::size_t line {};
     std::size_t character {};

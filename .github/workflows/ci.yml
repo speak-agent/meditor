@@ -98,6 +98,7 @@ jobs:
           xvfb-run -a python scripts/test_gui_linux.py --syntax markdown --theme light --screenshot target/evidence/linux-workbench-markdown.png
           xvfb-run -a python scripts/test_gui_linux.py --syntax json --language zh --screenshot target/evidence/linux-workbench-json.png
           xvfb-run -a python scripts/test_gui_linux.py --syntax toml --theme light --screenshot target/evidence/linux-workbench-toml.png
+          xvfb-run -a python scripts/test_gui_linux.py --bom --crlf --screenshot target/evidence/linux-workbench-crlf.png
       - name: Retain the synthetic workspace screenshot
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
