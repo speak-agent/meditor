@@ -76,6 +76,30 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     std::uint64_t completionDesired {};
     TextOffset completionPrefixStart {};
     std::string completionPrefix;
+    // Hover and signature help follow the completion desire-sequence protocol:
+    // the editor bumps a counter and the workbench serves the newest desire.
+    std::string hoverText;
+    bool hoverActive {};
+    std::uint64_t hoverDesired {};
+    Point hoverPoint {};
+    Position hoverPosition {};
+    std::function<void()> hoverRequested;
+    void dismiss_hover_() { if (hoverActive || !hoverText.empty()) { hoverActive = false; hoverText.clear(); if (changed) changed(); } }
+    void request_hover_(Point point, TextOffset offset) {
+        hoverActive = false; hoverText.clear();
+        try { hoverPosition = utf8_position_at(presentation.raw_text(), presentation.raw_offset(byte_at(value.text, offset))); }
+        catch (...) { return; }
+        hoverPoint = point; ++hoverDesired;
+        if (hoverRequested) hoverRequested();
+    }
+    std::string signatureLabel;
+    std::size_t signatureActiveParameter {};
+    bool signatureActive {};
+    std::uint64_t signatureDesired {};
+    void dismiss_signature_() { if (signatureActive || !signatureLabel.empty()) { signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0; if (changed) changed(); } }
+    // Runs BEFORE publish_ alongside schedule_completion_: the changed() chain
+    // must observe the new desire on the same keystroke.
+    void schedule_signature_() { signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0; ++signatureDesired; }
     Rect completionBox_() const {
         auto [row, x] = location_(value.selection.active);
         const auto width = [&] {
@@ -153,7 +177,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         presentation = TextPresentation(data.at("text").get<std::string>());
         value.text = presentation.text(); format = presentation.format();
         format.lineEnding = data.at("format").at("lineEnding") == "crlf" ? LineEnding::CrLf : LineEnding::Lf;
-        documentRevision = revision; searchMatches.clear(); completionActive = false; completionMatches.clear(); completions.clear(); completionSelected = 0;
+        documentRevision = revision; searchMatches.clear(); completionActive = false; completionMatches.clear(); completions.clear(); completionSelected = 0; hoverActive = false; hoverText.clear(); signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0;
         const auto length = units(value.text);
         auto clamp = [&](TextOffset offset) {
             offset = std::clamp<TextOffset>(offset, 0, length);
@@ -270,7 +294,13 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
             }
             if ((original || baseline) && compositionGroup.empty()) compositionGroup = compositionPrefix + std::to_string(++compositionSequence);
             const bool committedText = !next.composition && std::any_of(batch.commands.begin(), batch.commands.end(), [](const TextInputCommand& command) { return command.kind == TextInputCommandKind::CommitText; });
-            if (committedText) schedule_completion_(next);
+            if (committedText) {
+                schedule_completion_(next);
+                const auto caretByte = byte_at(next.text, next.selection.active);
+                const auto trigger = caretByte ? next.text[caretByte - 1] : '\0';
+                if (trigger == '(' || trigger == ',') schedule_signature_();
+                if (trigger == ')') { signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0; } // publish_ notifies the tree below
+            }
             if (!publish_(next, compositionGroup, std::move(endings), bom)) return {TextInputResultCode::Rejected};
             baseline = original;
             if (!next.composition) compositionGroup.clear();
@@ -314,6 +344,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     TextInputKeyResult HandleTextKey(const KeyEvent& event) override {
         if (event.type != KeyEventType::Down) return TextInputKeyResult::Unhandled;
         if (value.composition) return TextInputKeyResult::Unhandled;
+        if (event.key == Key::Escape && (signatureActive || hoverActive)) { dismiss_signature_(); dismiss_hover_(); return TextInputKeyResult::Handled; }
         if (completionShown()) {
             if (event.key == Key::ArrowUp || event.key == Key::ArrowDown) {
                 completionSelected = (completionSelected + (event.key == Key::ArrowDown ? 1 : completionMatches.size() - 1)) % completionMatches.size();
@@ -321,7 +352,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
                 return TextInputKeyResult::Handled;
             }
             if (event.key == Key::Enter || event.key == Key::Tab) { accept_completion_(); return TextInputKeyResult::Handled; }
-            if (event.key == Key::Escape) { dismiss_completion_(); return TextInputKeyResult::Handled; }
+            if (event.key == Key::Escape) { dismiss_completion_(); dismiss_signature_(); dismiss_hover_(); return TextInputKeyResult::Handled; }
         }
         const auto shortcut = shortcuts::resolve(event, shortcuts::Context::Editor);
         if (event.key == Key::Space && (event.modifiers.control || event.modifiers.meta) && !event.modifiers.alt && !event.modifiers.shift) {
@@ -348,7 +379,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         else if (event.key == Key::Enter) replace_(next, selection, "\n", endings);
         else if (event.key == Key::Tab) replace_(next, selection, "    ", endings);
         else return TextInputKeyResult::Unhandled;
-        if (pendingDismiss) dismiss_completion_();
+        if (pendingDismiss) { dismiss_completion_(); dismiss_signature_(); dismiss_hover_(); }
         publish_(next, {}, std::move(endings)); return TextInputKeyResult::Handled;
     }
     bool CanPerformTextEditingAction(TextEditingAction action, PlatformClipboard* clipboard) const override {
@@ -439,6 +470,7 @@ public:
             }
             model_->dismiss_completion_();
         }
+        if (event.type == PointerEventType::Down) model_->dismiss_hover_();
         if (event.type == PointerEventType::Down || (event.type == PointerEventType::Move && dragging_)) {
             auto hit = model_->QueryTextInputPosition(model_->input.session_id, event.position);
             auto value = model_->value; if (!dragging_) value.selection.anchor = hit.position.offset; value.selection.active = hit.position.offset;
@@ -446,6 +478,12 @@ public:
         }
         if (event.type == PointerEventType::Up || event.type == PointerEventType::Cancel) { dragging_ = false; return PointerResult::Handled; }
         return PointerResult::Ignored;
+    }
+    bool HoverHitTest(ViewNode& node, Point position) const override { return position.x >= 0 && position.y >= 0 && position.x <= node.Bounds().width && position.y <= node.Bounds().height; }
+    void OnHover(ViewNode&, const HoverEvent& event) override {
+        if (event.type == HoverEventType::Leave) { model_->dismiss_hover_(); return; }
+        if (!model_->input.session_id) return;
+        model_->request_hover_(event.position, model_->QueryTextInputPosition(model_->input.session_id, event.position).position.offset);
     }
     PaintInvalidation PrepareGeometry(ViewNode& node, TextMeasurer& measurer) override {
         if (model_->focusWhenMounted) { model_->focusWhenMounted = false; node.RequestFocus(); }
@@ -542,6 +580,28 @@ public:
                 if (++row >= 8) break;
             }
         }
+        if (model.hoverActive && !model.hoverText.empty()) {
+            const auto width = std::min(std::max(60.0F, 18.0F + static_cast<float>(model.hoverText.size()) * 8.0F), std::max(60.0F, model.viewport.width - 24.0F));
+            const auto box = Rect {std::clamp(model.hoverPoint.x + 12.0F, 2.0F, std::max(2.0F, model.viewport.width - width - 2.0F)),
+                std::clamp(model.hoverPoint.y - 34.0F, 2.0F, std::max(2.0F, model.viewport.height - 30.0F)), width, 26.0F};
+                        context.DrawRect(box, model.dark ? Color::Rgb(30, 37, 50) : Color::Rgb(255, 253, 246));
+            context.DrawRect({box.x, box.y, box.width, box.height}, model.dark ? Color::Rgb(64, 80, 104) : Color::Rgb(214, 205, 178));
+            context.DrawText({box.x + 9, box.y + 4, box.width - 14, 20.0F}, model.hoverText,
+                {.font = Font::Monospace(13), .foreground = model.dark ? Color::Rgb(222, 229, 240) : Color::Rgb(46, 55, 70)});
+        }
+        if (model.signatureActive && !model.signatureLabel.empty()) {
+            const auto detail = "  param " + std::to_string(model.signatureActiveParameter + 1);
+            const auto width = std::min(24.0F + static_cast<float>(model.signatureLabel.size() + detail.size()) * 8.0F, std::max(120.0F, model.viewport.width - 80.0F));
+            auto [row, x] = model.location_(model.value.selection.active);
+            const auto above = 10.0F + (static_cast<float>(row) - model.topLine) * model.lineHeight - 32.0F;
+            const auto box = Rect {64.0F + x, above < 10.0F ? 10.0F + (static_cast<float>(row) - model.topLine) + 1.0F * model.lineHeight + model.lineHeight : above, width, 28.0F};
+                        context.DrawRect(box, model.dark ? Color::Rgb(26, 33, 45) : Color::Rgb(255, 255, 255));
+            context.DrawRect({box.x, box.y, box.width, box.height}, model.dark ? Color::Rgb(60, 130, 116) : Color::Rgb(88, 164, 148));
+            context.DrawText({box.x + 10, box.y + 5, box.width - 16, 22.0F}, model.signatureLabel,
+                {.font = Font::Monospace(13), .foreground = model.dark ? Color::Rgb(214, 233, 226) : Color::Rgb(24, 68, 58)});
+            context.DrawText({box.x + 10 + static_cast<float>(model.signatureLabel.size()) * 8.0F, box.y + 5, box.width - 16, 22.0F}, detail,
+                {.font = Font::Monospace(13), .foreground = model.dark ? Color::Rgb(150, 168, 186) : Color::Rgb(110, 124, 140)});
+        }
     }
 };
 }
@@ -598,6 +658,38 @@ EditorState::CompletionSnapshot EditorState::completion_snapshot() const {
     return snapshot;
 }
 void EditorState::dismiss_completion() { impl_->dismiss_completion_(); }
+void EditorState::set_hover_driver(std::function<void()> driver) { impl_->hoverRequested = std::move(driver); }
+void EditorState::set_hover(std::string text) {
+    if (text.empty()) { impl_->dismiss_hover_(); return; }
+    if (impl_->hoverText == text && impl_->hoverActive) return;
+    impl_->hoverText = std::move(text); impl_->hoverActive = true;
+    if (impl_->changed) impl_->changed();
+}
+void EditorState::dismiss_hover() { impl_->dismiss_hover_(); }
+EditorState::HoverSnapshot EditorState::hover_snapshot() const {
+    HoverSnapshot snapshot;
+    snapshot.visible = impl_->hoverActive && !impl_->hoverText.empty();
+    snapshot.desired = impl_->hoverDesired;
+    snapshot.text = impl_->hoverText;
+    snapshot.position = impl_->hoverPosition;
+    return snapshot;
+}
+void EditorState::set_signature(std::string label, std::size_t activeParameter, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return;
+    if (label.empty()) { impl_->dismiss_signature_(); return; }
+    if (impl_->signatureLabel == label && impl_->signatureActiveParameter == activeParameter && impl_->signatureActive) return;
+    impl_->signatureLabel = std::move(label); impl_->signatureActiveParameter = activeParameter; impl_->signatureActive = true;
+    if (impl_->changed) impl_->changed();
+}
+void EditorState::dismiss_signature() { impl_->dismiss_signature_(); }
+EditorState::SignatureSnapshot EditorState::signature_snapshot() const {
+    SignatureSnapshot snapshot;
+    snapshot.visible = impl_->signatureActive && !impl_->signatureLabel.empty();
+    snapshot.desired = impl_->signatureDesired;
+    snapshot.label = impl_->signatureLabel;
+    snapshot.activeParameter = impl_->signatureActiveParameter;
+    return snapshot;
+}
 bool EditorState::completion_visible() const { return impl_->completionShown(); }
 bool EditorState::set_search_results(std::vector<TextRange> matches, std::uint64_t revision) {
     if (revision != impl_->documentRevision) return false;

@@ -89,6 +89,7 @@ int run_tool(int argc, char** argv) {
         if (method == "initialize") result = {{"capabilities", {{"textDocumentSync", 1}, {"positionEncoding", "utf-16"}, {"experimental", {{"cxxModules", {{"version", 1}}}}}}}};
         else if (method == "textDocument/completion") result = {{"isIncomplete", false}, {"items", Json::array({{{"label", "module_value"}, {"kind", 6}}})}};
         else if (method == "textDocument/hover") result = {{"contents", {{"kind", "plaintext"}, {"value", "fixture semantic value"}}}, {"fixture", {{"lastSaved", lastSaved.contains(request["params"]["textDocument"]["uri"].get<std::string>()) ? lastSaved.at(request["params"]["textDocument"]["uri"].get<std::string>()) : Json(nullptr)}}}};
+        else if (method == "textDocument/signatureHelp") result = {{"signatures", Json::array({{{"label", "fixture_fn(int a, int b)"}, {"parameters", Json::array({{{"label", "int a"}}, {{"label", "int b"}}})}, {"activeParameter", 0}}})}, {"activeSignature", 0}};
         else if ((method == "textDocument/definition" || method == "textDocument/references") && (fault == "nav-locations" || fault == "gui-nav")) {
             const auto source = request["params"]["textDocument"]["uri"].get<std::string>();
             const auto target = source.substr(0, source.rfind('/') + 1) + "target.cppm";

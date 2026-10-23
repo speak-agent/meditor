@@ -81,6 +81,9 @@ struct WorkspaceModel {
     std::string activeTask, taskKind, taskStateKey {"status.ready"}, bottomPanel;
     std::uint64_t completionSequence {0};
     std::function<void()> completionDriver;
+    std::uint64_t signatureSequence {0};
+    std::function<void()> signatureDriver;
+    std::function<void()> hoverDriver;
     std::uint64_t generation {};
     bool dark {true};
     bool reducedMotion {};
@@ -291,13 +294,94 @@ View workbench(WorkspaceServices services) {
             } catch (...) { data->completionSequence = previous; } // Launch is only legal from event contexts; the next change retries.
         };
         data->completionDriver = driveCompletion;
+        auto driveSignature = [data, tasks, refresh] {
+            if (data->active.empty() || !data->application || !data->editors.contains(data->active)) return;
+            const auto editor = data->editors.at(data->active);
+            if (editor->language_id() != "cpp") return;
+            const auto snapshot = editor->signature_snapshot();
+            if (snapshot.desired == data->signatureSequence) return;
+            const auto previous = data->signatureSequence;
+            data->signatureSequence = snapshot.desired;
+            const auto position = editor->lsp_position();
+            auto reply = data->application->execute({{"command", "language.query"}, {"params", {
+                {"document", data->active}, {"revision", editor->revision()}, {"operation", "signature"},
+                {"position", {{"line", position.line}, {"character", position.character}}}, {"timeoutMs", 8000}}}});
+            if (!reply.value("ok", false)) { data->signatureSequence = previous; editor->dismiss_signature(); refresh(); return; }
+            const auto id = reply["data"]["query"].get<std::string>();
+            const auto application = data->application; const auto generation = data->generation;
+            const auto document = data->active; const auto revision = editor->revision();
+            const auto desired = snapshot.desired;
+            try {
+            tasks.Launch([=]() -> Task<void> {
+                for (;;) {
+                    co_await Delay(std::chrono::milliseconds(40));
+                    if (data->application != application || data->generation != generation) { editor->dismiss_signature(); refresh(); co_return; }
+                    if (data->editors.find(document) == data->editors.end()) co_return;
+                    if (data->editors.at(document)->signature_snapshot().desired != desired) co_return; // superseded by newer typing
+                    const auto result = application->execute({{"command", "language.result"}, {"params", {{"query", id}}}});
+                    if (!result.value("ok", false)) { editor->dismiss_signature(); refresh(); co_return; }
+                    const auto state = result["data"].value("state", "failed");
+                    if (state == "running") continue;
+                    if (state == "succeeded" && !result["data"].value("stale", true)) {
+                        const auto& payload = result["data"].contains("result") && result["data"]["result"].contains("signatures") ? result["data"]["result"]["signatures"] : Json::array();
+                        if (!payload.empty()) {
+                            const auto index = std::min<std::size_t>(result["data"]["result"].value("activeSignature", 0), payload.size() - 1);
+                            editor->set_signature(payload[index].value("label", ""), payload[index].value("activeParameter", 0), revision);
+                        } else editor->dismiss_signature();
+                    } else editor->dismiss_signature();
+                    refresh(); co_return;
+                }
+            });
+            } catch (...) { data->signatureSequence = previous; } // Launch is only legal from event contexts; the next change retries.
+        };
+        data->signatureDriver = driveSignature;
+        auto driveHover = [data, tasks, refresh] {
+            if (data->active.empty() || !data->application || !data->editors.contains(data->active)) return;
+            const auto editor = data->editors.at(data->active);
+            if (editor->language_id() != "cpp") return;
+            const auto snapshot = editor->hover_snapshot();
+            if (!snapshot.desired) return;
+            const auto application = data->application; const auto generation = data->generation;
+            const auto document = data->active; const auto desired = snapshot.desired;
+            const auto line = snapshot.position.line, character = snapshot.position.character;
+            try {
+            tasks.Launch([=]() -> Task<void> {
+                co_await Delay(std::chrono::milliseconds(400)); // hover waits for the pointer to rest
+                if (data->application != application || data->generation != generation) co_return;
+                if (data->editors.find(document) == data->editors.end()) co_return;
+                if (data->editors.at(document)->hover_snapshot().desired != desired) co_return; // pointer moved: a newer rest timer owns the query
+                auto reply = application->execute({{"command", "language.query"}, {"params", {
+                    {"document", document}, {"revision", data->editors.at(document)->revision()}, {"operation", "hover"},
+                    {"position", {{"line", line}, {"character", character}}}, {"timeoutMs", 8000}}}});
+                if (!reply.value("ok", false)) { editor->dismiss_hover(); refresh(); co_return; }
+                const auto id = reply["data"]["query"].get<std::string>();
+                for (;;) {
+                    co_await Delay(std::chrono::milliseconds(40));
+                    if (data->editors.find(document) == data->editors.end()) co_return;
+                    if (data->editors.at(document)->hover_snapshot().desired != desired) co_return;
+                    const auto result = application->execute({{"command", "language.result"}, {"params", {{"query", id}}}});
+                    if (!result.value("ok", false)) { editor->dismiss_hover(); refresh(); co_return; }
+                    const auto state = result["data"].value("state", "failed");
+                    if (state == "running") continue;
+                    if (state == "succeeded" && !result["data"].value("stale", true)) {
+                        const auto text = result["data"]["result"].contains("contents") ? result["data"]["result"]["contents"].value("value", "") : "";
+                        editor->set_hover(text); // empty hover dismisses
+                    } else editor->dismiss_hover();
+                    refresh(); co_return;
+                }
+            });
+            } catch (...) {} // Launch is only legal from event contexts; the next pointer move retries.
+        };
+        data->hoverDriver = driveHover;
         auto open = [data, refresh, run](std::string name) {
             auto result = run("document.open", {{"path", name}});
             if (!result.is_object() || !result.value("ok", false)) return;
             auto id = result["data"]["document"].get<std::string>();
             if (data->active != id && !data->languageOperation.empty()) { data->cancel_language(); data->languageRows.clear(); data->languageState = "language.stale"; }
             if (!data->editors.contains(id)) {
-                data->editors[id] = std::make_shared<EditorState>(data->application, id, [data, refresh] { refresh(); if (data->completionDriver) data->completionDriver(); });
+                auto editor = std::make_shared<EditorState>(data->application, id, [data, refresh] { refresh(); if (data->completionDriver) data->completionDriver(); if (data->signatureDriver) data->signatureDriver(); });
+                editor->set_hover_driver([data] { if (data->hoverDriver) data->hoverDriver(); });
+                data->editors[id] = std::move(editor);
                 data->tabs.push_back(id);
             }
             data->active = id; data->detail(name); refresh();
@@ -611,7 +695,9 @@ View workbench(WorkspaceServices services) {
                                     }
                                     const auto& target = reply["data"]["target"]; const auto id = target["document"].get<std::string>();
                                     if (!data->editors.contains(id)) {
-                data->editors[id] = std::make_shared<EditorState>(data->application, id, [data, refresh] { refresh(); if (data->completionDriver) data->completionDriver(); });
+                auto editor = std::make_shared<EditorState>(data->application, id, [data, refresh] { refresh(); if (data->completionDriver) data->completionDriver(); if (data->signatureDriver) data->signatureDriver(); });
+                editor->set_hover_driver([data] { if (data->hoverDriver) data->hoverDriver(); });
+                data->editors[id] = std::move(editor);
                 data->tabs.push_back(id);
             }
                                     data->active = id;
@@ -741,7 +827,11 @@ View workbench(WorkspaceServices services) {
                 Button(t("about.entry")).Key("about-entry").OnClick(showAbout),
                 Button(t("settings.title")).Key("settings-entry").OnClick(showSettings),
                 !data->active.empty() && data->editors.contains(data->active) && data->editors.at(data->active)->completion_visible()
-                    ? View(Spacer().Key("completion-active").With(Frame{.width = 0.0F, .height = 0.0F})) : View{}
+                    ? View(Spacer().Key("completion-active").With(Frame{.width = 0.0F, .height = 0.0F})) : View{},
+                !data->active.empty() && data->editors.contains(data->active) && data->editors.at(data->active)->hover_snapshot().visible
+                    ? View(Spacer().Key("hover-active").With(Frame{.width = 0.0F, .height = 0.0F})) : View{},
+                !data->active.empty() && data->editors.contains(data->active) && data->editors.at(data->active)->signature_snapshot().visible
+                    ? View(Spacer().Key("signature-active").With(Frame{.width = 0.0F, .height = 0.0F})) : View{}
             }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))
         }.With(Background(background), Foreground(ink), CrossAlign(CrossAxisAlignment::Stretch))
             .On<ViewEvents::KeyIntercept>([save, data, refresh, openSearch, queryLanguage](const KeyEvent& event) {
