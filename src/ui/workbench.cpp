@@ -84,6 +84,8 @@ struct WorkspaceModel {
     std::uint64_t signatureSequence {0};
     std::function<void()> signatureDriver;
     std::function<void()> hoverDriver;
+    std::uint64_t semanticSequence {0};
+    std::function<void()> semanticDriver;
     std::uint64_t generation {};
     bool dark {true};
     bool reducedMotion {};
@@ -373,13 +375,64 @@ View workbench(WorkspaceServices services) {
             } catch (...) {} // Launch is only legal from event contexts; the next pointer move retries.
         };
         data->hoverDriver = driveHover;
+        auto driveSemantic = [data, tasks, refresh] {
+            if (data->active.empty() || !data->application || !data->editors.contains(data->active)) return;
+            const auto editor = data->editors.at(data->active);
+            if (editor->language_id() != "cpp") return;
+            const auto snapshot = editor->semantic_snapshot();
+            if (snapshot.desired == data->semanticSequence) return;
+            const auto previous = data->semanticSequence;
+            data->semanticSequence = snapshot.desired;
+            const auto application = data->application; const auto generation = data->generation;
+            const auto document = data->active; const auto desired = snapshot.desired;
+            try {
+            tasks.Launch([=]() -> Task<void> {
+                co_await Delay(std::chrono::milliseconds(250)); // tokens tolerate latency behind typing
+                if (data->application != application || data->generation != generation) co_return;
+                if (data->editors.find(document) == data->editors.end()) co_return;
+                const auto serving = data->editors.at(document);
+                if (serving->semantic_snapshot().desired != desired) co_return; // superseded
+                const auto revision = serving->revision();
+                auto reply = application->execute({{"command", "language.query"}, {"params", {
+                    {"document", document}, {"revision", revision}, {"operation", "semanticTokens"},
+                    {"range", {{"startLine", 0}, {"endLine", 4096}}}, {"timeoutMs", 8000}}}});
+                if (!reply.value("ok", false)) co_return;
+                const auto id = reply["data"]["query"].get<std::string>();
+                for (;;) {
+                    co_await Delay(std::chrono::milliseconds(40));
+                    if (data->editors.find(document) == data->editors.end()) co_return;
+                    if (data->editors.at(document)->semantic_snapshot().desired != desired) co_return;
+                    const auto result = application->execute({{"command", "language.result"}, {"params", {{"query", id}}}});
+                    if (!result.value("ok", false)) co_return;
+                    const auto state = result["data"].value("state", "failed");
+                    if (state == "running") continue;
+                    if (state == "succeeded" && !result["data"].value("stale", true)) {
+                        std::vector<EditorState::SemanticToken> tokens;
+                        if (result["data"]["result"].contains("data") && result["data"]["result"]["data"].is_array()) {
+                            std::size_t line {}, character {};
+                            for (const auto& entry : result["data"]["result"]["data"]) {
+                                if (!entry.is_array() || entry.size() < 4) continue;
+                                line += entry[0].get<std::size_t>();
+                                character = entry[0].get<std::size_t>() ? entry[1].get<std::size_t>() : character + entry[1].get<std::size_t>();
+                                tokens.push_back({line, character, character + entry[2].get<std::size_t>(), entry[3].get<std::size_t>()});
+                            }
+                        }
+                        serving->set_semantic_tokens(std::move(tokens), revision);
+                        refresh();
+                    }
+                    co_return;
+                }
+            });
+            } catch (...) { data->semanticSequence = previous; } // Launch is only legal from event contexts; the next change retries.
+        };
+        data->semanticDriver = driveSemantic;
         auto open = [data, refresh, run](std::string name) {
             auto result = run("document.open", {{"path", name}});
             if (!result.is_object() || !result.value("ok", false)) return;
             auto id = result["data"]["document"].get<std::string>();
             if (data->active != id && !data->languageOperation.empty()) { data->cancel_language(); data->languageRows.clear(); data->languageState = "language.stale"; }
             if (!data->editors.contains(id)) {
-                auto editor = std::make_shared<EditorState>(data->application, id, [data, refresh] { refresh(); if (data->completionDriver) data->completionDriver(); if (data->signatureDriver) data->signatureDriver(); });
+                auto editor = std::make_shared<EditorState>(data->application, id, [data, refresh] { refresh(); if (data->completionDriver) data->completionDriver(); if (data->signatureDriver) data->signatureDriver(); if (data->semanticDriver) data->semanticDriver(); });
                 editor->set_hover_driver([data] { if (data->hoverDriver) data->hoverDriver(); });
                 data->editors[id] = std::move(editor);
                 data->tabs.push_back(id);
@@ -658,7 +711,8 @@ View workbench(WorkspaceServices services) {
                 Button(t("action.run")).Key("action-run").With(Enabled(!data->busy)).OnClick([executeTask] { executeTask("run"); }),
                 Button(t("action.test")).Key("action-test").With(Enabled(!data->busy)).OnClick([executeTask] { executeTask("test"); }),
                 Button(t("action.cancelTask")).Key("action-cancel-task").With(Enabled(data->busy)).OnClick([data, run] { if (!data->activeTask.empty()) run("task.cancel", {{"task", data->activeTask}}); }),
-                Button(t("action.trust")).Key("action-trust").OnClick([run] { run("workspace.trust", {{"allow", true}}); }),
+                Button(t("action.trust")).Key("action-trust").OnClick([run, data] { run("workspace.trust", {{"allow", true}}); if (data->semanticDriver) data->semanticDriver(); // event context: serve any desire composed during this click
+ }),
             }.With(Padding(8), Spacing(6));
             View languagePanel;
             if (!data->languageOperation.empty() && data->bottomPanel == "language") {
@@ -695,7 +749,7 @@ View workbench(WorkspaceServices services) {
                                     }
                                     const auto& target = reply["data"]["target"]; const auto id = target["document"].get<std::string>();
                                     if (!data->editors.contains(id)) {
-                auto editor = std::make_shared<EditorState>(data->application, id, [data, refresh] { refresh(); if (data->completionDriver) data->completionDriver(); if (data->signatureDriver) data->signatureDriver(); });
+                auto editor = std::make_shared<EditorState>(data->application, id, [data, refresh] { refresh(); if (data->completionDriver) data->completionDriver(); if (data->signatureDriver) data->signatureDriver(); if (data->semanticDriver) data->semanticDriver(); });
                 editor->set_hover_driver([data] { if (data->hoverDriver) data->hoverDriver(); });
                 data->editors[id] = std::move(editor);
                 data->tabs.push_back(id);
@@ -831,7 +885,9 @@ View workbench(WorkspaceServices services) {
                 !data->active.empty() && data->editors.contains(data->active) && data->editors.at(data->active)->hover_snapshot().visible
                     ? View(Spacer().Key("hover-active").With(Frame{.width = 0.0F, .height = 0.0F})) : View{},
                 !data->active.empty() && data->editors.contains(data->active) && data->editors.at(data->active)->signature_snapshot().visible
-                    ? View(Spacer().Key("signature-active").With(Frame{.width = 0.0F, .height = 0.0F})) : View{}
+                    ? View(Spacer().Key("signature-active").With(Frame{.width = 0.0F, .height = 0.0F})) : View{},
+                !data->active.empty() && data->editors.contains(data->active) && data->editors.at(data->active)->semantic_snapshot().visible
+                    ? View(Spacer().Key("semantic-tokens-active").With(Frame{.width = 0.0F, .height = 0.0F})) : View{}
             }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))
         }.With(Background(background), Foreground(ink), CrossAlign(CrossAxisAlignment::Stretch))
             .On<ViewEvents::KeyIntercept>([save, data, refresh, openSearch, queryLanguage](const KeyEvent& event) {

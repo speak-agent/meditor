@@ -98,7 +98,20 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     std::uint64_t signatureDesired {};
     void dismiss_signature_() { if (signatureActive || !signatureLabel.empty()) { signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0; if (changed) changed(); } }
     // Runs BEFORE publish_ alongside schedule_completion_: the changed() chain
-    // must observe the new desire on the same keystroke.
+    // Semantic overlay: LSP tokens (UTF-16, line-local) layered over syntax colors.
+    struct SemanticSpan { std::size_t line; TextOffset start, end; std::size_t type; };
+    std::vector<SemanticSpan> semanticSpans;
+    std::uint64_t semanticDesired {1}; // the first view already wants tokens
+    static Color semantic_color_(std::size_t type, bool dark) {
+        switch (type) { // Common LSP legend prefixes; unknown indices fall through to the variable tone.
+        case 0: return dark ? Color::Rgb(197, 157, 255) : Color::Rgb(112, 48, 160); // keyword
+        case 2: return dark ? Color::Rgb(127, 188, 240) : Color::Rgb(33, 98, 161); // function
+        case 3: return dark ? Color::Rgb(112, 214, 202) : Color::Rgb(18, 110, 102); // type
+        case 4: return dark ? Color::Rgb(151, 210, 188) : Color::Rgb(26, 112, 91); // number/property
+        case 5: return dark ? Color::Rgb(226, 176, 139) : Color::Rgb(151, 64, 29); // macro
+        default: return dark ? Color::Rgb(233, 238, 247) : Color::Rgb(48, 60, 78); // variable
+        }
+    }
     void schedule_signature_() { signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0; ++signatureDesired; }
     Rect completionBox_() const {
         auto [row, x] = location_(value.selection.active);
@@ -177,7 +190,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         presentation = TextPresentation(data.at("text").get<std::string>());
         value.text = presentation.text(); format = presentation.format();
         format.lineEnding = data.at("format").at("lineEnding") == "crlf" ? LineEnding::CrLf : LineEnding::Lf;
-        documentRevision = revision; searchMatches.clear(); completionActive = false; completionMatches.clear(); completions.clear(); completionSelected = 0; hoverActive = false; hoverText.clear(); signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0;
+        documentRevision = revision; searchMatches.clear(); completionActive = false; completionMatches.clear(); completions.clear(); completionSelected = 0; hoverActive = false; hoverText.clear(); signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0; semanticSpans.clear(); ++semanticDesired;
         const auto length = units(value.text);
         auto clamp = [&](TextOffset offset) {
             offset = std::clamp<TextOffset>(offset, 0, length);
@@ -196,6 +209,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         } else normalize_value(next, endings, format.lineEnding);
         const bool contentChanged = next.text != value.text || (endings && !std::ranges::equal(*endings, presentation.line_endings())) || (bom && *bom != format.utf8Bom);
         if (contentChanged) {
+            semanticSpans.clear(); ++semanticDesired;
             if (!endings) return false;
             auto raw = encode_text_format(next.text, *endings, bom.value_or(format.utf8Bom));
             const auto& before = presentation.raw_text();
@@ -562,6 +576,19 @@ public:
                 ranges.push_back({{offset, end}, {.foreground = color}});
                 offset = end; byte = token.end;
             }
+            for (const auto& span : model.semanticSpans) {
+                if (span.line != i || span.start >= span.end) continue;
+                std::vector<TextStyleRange> merged; merged.reserve(ranges.size() + 2);
+                for (const auto& range : ranges) {
+                    const auto overlap = std::max(range.range.start, span.start) < std::min(range.range.end, span.end);
+                    if (!overlap) { merged.push_back(range); continue; }
+                    if (range.range.start < span.start) merged.push_back({{range.range.start, span.start}, range.style});
+                    if (range.range.end > span.end) merged.push_back({{span.end, range.range.end}, range.style});
+                }
+                merged.push_back({{span.start, span.end}, {.foreground = model.semantic_color_(span.type, model.dark)}});
+                std::sort(merged.begin(), merged.end(), [](const TextStyleRange& left, const TextStyleRange& right) { return left.range.start < right.range.start; });
+                ranges = std::move(merged);
+            }
             // One attributed paragraph preserves shaping, selection and UTF-16 geometry.
             context.DrawText({64, static_cast<float>(y), std::max(0.0F, model.viewport.width - 72), model.lineHeight}, AttributedText::FromRanges(text, std::move(ranges)), style);
         }
@@ -716,5 +743,18 @@ View code_editor(std::shared_ptr<EditorState> state, bool dark) {
             if (model.changed) model.changed();
             return true;
         });
+}
+void EditorState::set_semantic_tokens(std::vector<SemanticToken> tokens, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return;
+    impl_->semanticSpans.clear();
+    for (auto& token : tokens) impl_->semanticSpans.push_back({token.line, static_cast<TextOffset>(token.start), static_cast<TextOffset>(token.end), token.type});
+    if (impl_->changed) impl_->changed();
+}
+void EditorState::request_semantic_tokens() { ++impl_->semanticDesired; if (impl_->changed) impl_->changed(); }
+EditorState::SemanticSnapshot EditorState::semantic_snapshot() const {
+    SemanticSnapshot snapshot;
+    snapshot.visible = !impl_->semanticSpans.empty();
+    snapshot.desired = impl_->semanticDesired;
+    return snapshot;
 }
 }

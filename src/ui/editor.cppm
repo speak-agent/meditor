@@ -41,6 +41,11 @@ public:
     void set_signature(std::string label, std::size_t activeParameter, std::uint64_t revision);
     void dismiss_signature();
     SignatureSnapshot signature_snapshot() const;
+    struct SemanticToken { std::size_t line {}, start {}, end {}, type {}; };
+    struct SemanticSnapshot { bool visible {}; std::uint64_t desired {}; };
+    void set_semantic_tokens(std::vector<SemanticToken> tokens, std::uint64_t revision);
+    void request_semantic_tokens();
+    SemanticSnapshot semantic_snapshot() const;
     bool select_match(huxerui::TextSelection selection, std::uint64_t revision);
     bool set_search_results(std::vector<huxerui::TextRange> matches, std::uint64_t revision);
     void clear_search_results();

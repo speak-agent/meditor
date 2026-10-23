@@ -412,6 +412,7 @@ struct Application::Impl {
         static const std::map<std::string, std::string> methods {
             {"completion", "textDocument/completion"}, {"hover", "textDocument/hover"}, {"definition", "textDocument/definition"},
             {"references", "textDocument/references"}, {"symbols", "textDocument/documentSymbol"}, {"signature", "textDocument/signatureHelp"},
+            {"semanticTokens", "textDocument/semanticTokens/range"},
             {"diagnostics", ""}, {"modules.graph", "cxxModules/graph"}, {"modules.info", "cxxModules/moduleInfo"}, {"modules.contexts", "cxxModules/contexts"}};
         return methods;
     }
@@ -433,6 +434,11 @@ struct Application::Impl {
             try { target.document.offset_at({position["line"].get<std::size_t>(), position["character"].get<std::size_t>()}); }
             catch (const std::exception&) { throw CommandError("invalid-params", "Invalid UTF-16 position"); }
         } else if (params.contains("position")) throw CommandError("invalid-params", "This language operation has no position");
+        if (operation == "semanticTokens") {
+            const auto& range = params.at("range");
+            const auto valid = range.is_object() && range.size() == 2 && range.contains("startLine") && range.contains("endLine") && range["startLine"].is_number_integer() && range["endLine"].is_number_integer() && range["endLine"].get<std::int64_t>() >= range["startLine"].get<std::int64_t>();
+            if (!valid) throw CommandError("invalid-params", "A startLine/endLine range is required");
+        } else if (params.contains("range")) throw CommandError("invalid-params", "This language operation has no range");
         if (operation == "modules.info") { if (params.at("name").get<std::string>().empty()) throw CommandError("invalid-params", "A module name is required"); }
         else if (params.contains("name")) throw CommandError("invalid-params", "This language operation has no module name");
         require_trust();
@@ -477,6 +483,7 @@ struct Application::Impl {
                     if (operation.starts_with("modules.") && !client->modules_supported()) throw CommandError("capability-unavailable", "Server does not advertise Modules extensions");
                     Json request = {{"textDocument", {{"uri", uri}}}};
                     if (params.contains("position")) request["position"] = params["position"];
+                    if (params.contains("range")) request["range"] = {{"start", {{"line", params["range"]["startLine"]}, {"character", 0}}}, {"end", {{"line", params["range"]["endLine"]}, {"character", 0}}}};
                     if (operation == "references") request["context"] = {{"includeDeclaration", true}};
                     if (operation == "modules.graph") request = Json::object();
                     if (operation == "modules.info") request = {{"name", params.at("name")}};
@@ -844,7 +851,7 @@ const Json& Application::metadata_() {
             Json properties = Json::object(); Json required = Json::array();
             auto field = [&](std::string key, std::string type, bool needed = false) { properties[key] = {{"type", type}}; if (needed) required.push_back(key); };
             if (command == "settings.update") { field("revision", "integer", true); field("changes", "object", true); }
-            else if (command == "language.query") { field("document", "string", true); field("revision", "integer", true); field("operation", "string", true); field("position", "object"); field("name", "string"); field("timeoutMs", "integer"); properties["operation"]["enum"] = operations; properties["timeoutMs"]["minimum"] = 100; properties["timeoutMs"]["maximum"] = 120000; }
+            else if (command == "language.query") { field("document", "string", true); field("revision", "integer", true); field("operation", "string", true); field("position", "object"); field("range", "object"); field("name", "string"); field("timeoutMs", "integer"); properties["operation"]["enum"] = operations; properties["timeoutMs"]["minimum"] = 100; properties["timeoutMs"]["maximum"] = 120000; }
             else if (command == "language.result" || command == "language.cancel" || command == "language.release") { field("query", "string", true); if (command == "language.result") field("includeResult", "boolean"); }
             else if (command == "language.navigate") { field("query", "string", true); field("location", "integer", true); }
             else if (command == "document.open") { field("path", "string", true); field("create", "boolean"); }
