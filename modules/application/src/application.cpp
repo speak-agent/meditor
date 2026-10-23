@@ -756,6 +756,17 @@ struct Application::Impl {
             const auto toolHome = path_to_utf8(runtime.toolRoot);
             Json result = {{"version", "0.0.1"}, {"tools", Json::object()}, {"runtime", {{"mode", runtime.portable ? "portable" : "installed"}, {"managedToolHomes", true}, {"toolHomeContainsSpaces", toolHome.find(' ') != std::string::npos}}}};
             for (auto name : {"mcpp", "mcppls"}) { try { tool(name); result["tools"][name] = {{"available", true}}; } catch (...) { result["tools"][name] = {{"available", false}}; } }
+            Json missing = Json::array();
+            const auto& tools = result["tools"];
+            for (const auto& item : tools.items()) if (!item.value().value("available", false)) missing.push_back(item.key());
+            // Doctor is the machine-readable source for the first-run preparation flow: it names the
+            // exact operation, its progress surface and its offline behaviour; tasks carry the states.
+            result["preparation"] = {{"ready", missing.empty()},
+                {"missingTools", missing},
+                {"suggestedCommand", "environment.prepare"},
+                {"progressCommands", {{"status", "task.status"}, {"wait", "task.wait"}, {"cancel", "task.cancel"}}},
+                {"requiresNetwork", true},
+                {"offlineTerminalState", "environment.prepare fails with the tool error; retry after restoring connectivity"}};
             return result;
         }
         if (command == "portable.update" || command == "portable.uninstall") {
