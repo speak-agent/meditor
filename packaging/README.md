@@ -54,3 +54,15 @@ the payload are never touched. Both commands reject installed (non-portable)
 runtimes with `not-portable`. Directory renames cannot replace a payload whose
 files are locked by the running process on Windows; there the installer path
 performs the swap, which is why archives remain the primary deliverable.
+
+
+## Linux portable archive (primary deliverable)
+
+`mcpp pack --mode self-contained --profile release` produces the payload tree;
+packaging adds `portable.json` (`{"schemaVersion":1,"dataDirectory":"data"}`),
+runs `scripts/sanitize_package.py`, verifies with `scripts/check_artifact_privacy.py`
+and archives with ustar/owner 0. The 0.0.1 archive was verified end to end:
+extraction into a space+CJK path, `--version`, `doctor` (portable mode, spaced
+tool home, preparation ready), `document.open`, GUI session, a real
+`portable.update` payload swap preserving `data/`, `portable.uninstall` data
+cleanup, and a clean ubuntu:24.04 container run from the archive itself.
