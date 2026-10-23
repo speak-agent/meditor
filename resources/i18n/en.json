@@ -151,5 +151,10 @@
   "workspace.openFile": "Open file",
   "workspace.ready": "Your workspace is ready. Open a module from the explorer.",
   "workspace.untitled": "Untitled",
-  "action.selectAll": "Select all"
+  "action.selectAll": "Select all",
+  "prepare.title": "Development tools are not ready",
+  "prepare.missing": "Missing: {tools}",
+  "prepare.environment": "Prepare environment",
+  "prepare.running": "Preparing environment…",
+  "prepare.cancel": "Cancel preparation"
 }

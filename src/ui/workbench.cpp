@@ -86,6 +86,16 @@ struct WorkspaceModel {
     std::function<void()> hoverDriver;
     std::uint64_t semanticSequence {0};
     std::function<void()> semanticDriver;
+    // First-run environment guidance (R03): doctor is the machine-readable source.
+    bool preparationReady {true};
+    std::string preparationMissing, preparationTask;
+    bool preparationRunning {};
+    void adopt_preparation(const Json& doctor) {
+        const auto& preparation = doctor.at("preparation");
+        preparationReady = preparation.value("ready", true);
+        preparationMissing.clear();
+        for (const auto& tool : preparation.value("missingTools", Json::array())) preparationMissing += (preparationMissing.empty() ? "" : ", ") + tool.get<std::string>();
+    }
     std::uint64_t generation {};
     bool dark {true};
     bool reducedMotion {};
@@ -462,6 +472,10 @@ View workbench(WorkspaceServices services) {
                     if (!initialDocument.empty()) open(initialDocument);
                 } catch (...) { data->notice("status.openFailed"); }
                 refresh();
+            }
+            if (data->preferences) {
+                const auto doctor = data->preferences->execute({{"command", "doctor"}});
+                                if (doctor.value("ok", false)) data->adopt_preparation(doctor["data"]);
             }
             refresh();
         });
@@ -874,7 +888,39 @@ View workbench(WorkspaceServices services) {
             formatLabel += format.lineEnding == LineEnding::CrLf ? " · CRLF" : " · LF";
             if (format.mixedLineEndings) formatLabel += " · " + t("editor.mixedLineEndings");
         }
-        auto page = Column {header, Divider(), body,
+        // Stable shape: the banner row always mounts; ready state only swaps its children.
+        // Conditional whole-subtree swapping recreated the model state and lost the doctor result.
+        View preparationPanel = Row {
+            data->preparationReady ? View{} : View(Text(t("prepare.title"), TextRole::Title)),
+            data->preparationReady ? View{} : View(Text(data->messages.text("prepare.missing", {{"tools", data->preparationMissing.empty() ? "-" : data->preparationMissing}}), TextRole::Label).Key("preparation-missing")),
+            data->preparationReady ? View{} : (!data->preparationRunning
+                ? View(Button(t("prepare.environment")).Key("action-prepare").OnClick([data, run, tasks, refresh] {
+                      const auto reply = run("environment.prepare");
+                                            if (!reply.value("ok", false)) return;
+                      data->preparationTask = reply["data"].value("task", "");
+                      data->preparationRunning = true; refresh();
+                      const auto application = data->application; const auto generation = data->generation; const auto task = data->preparationTask;
+                      try {
+                      tasks.Launch([=]() -> Task<void> {
+                          for (;;) {
+                              co_await Delay(std::chrono::milliseconds(100));
+                              if (data->application != application || data->generation != generation) co_return;
+                              const auto status = application->execute({{"command", "task.status"}, {"params", {{"task", task}}}});
+                                                            if (!status.value("ok", false)) { data->preparationRunning = false; data->preparationTask.clear(); refresh(); co_return; }
+                              if (status["data"].value("state", "running") == "running") continue;
+                              const auto doctor = application->execute({{"command", "doctor"}});
+                              if (doctor.value("ok", false)) data->adopt_preparation(doctor["data"]);
+                              data->preparationRunning = false; data->preparationTask.clear(); refresh(); co_return;
+                          }
+                      });
+                      } catch (...) {} // Launch is only legal from event contexts; retry via the button.
+                  }))
+                : View(Button(t("prepare.cancel")).Key("action-prepare-cancel").OnClick([data, run] {
+                      if (!data->preparationTask.empty()) run("task.cancel", {{"task", data->preparationTask}});
+                  }))),
+            View(Spacer().Key(data->preparationReady ? "preparation-ready" : "preparation-missing-active").With(Frame{.width = 0.0F, .height = 0.0F})),
+        }.Key("preparation-banner").With(Padding(8), Spacing(10));
+        auto page = Column {header, Divider(), preparationPanel, body,
             Row {Text(data->status_text(), TextRole::Label).Key("status-text").With(Grow{1}),
                 compact ? View{} : View(Text(languageLabel + formatLabel, TextRole::Label).Key("document-language").With(Foreground(muted))),
                 data->selected ? View(Button(t("task.output")).Key("output-toggle").With(Enabled(!data->taskKind.empty()), Border{data->busy ? colors.accent : Color::Transparent(), 1}).OnClick([data, refresh] { data->bottomPanel = data->bottomPanel == "output" ? "" : "output"; refresh(); })) : View{},

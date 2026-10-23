@@ -151,5 +151,10 @@
   "workspace.openFile": "打开文件",
   "workspace.ready": "工作区已就绪。从文件列表中打开模块。",
   "workspace.untitled": "未命名",
-  "action.selectAll": "全选"
+  "action.selectAll": "全选",
+  "prepare.title": "开发工具未就绪",
+  "prepare.missing": "缺失：{tools}",
+  "prepare.environment": "准备环境",
+  "prepare.running": "正在准备环境…",
+  "prepare.cancel": "取消准备"
 }

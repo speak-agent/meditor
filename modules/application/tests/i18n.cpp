@@ -36,6 +36,7 @@ int main() {
         if (id == "settings.languageCurrent") arguments["language"] = "English";
         if (id == "search.matches" || id == "search.replaced") arguments["count"] = "2";
         if (id == "language.position") { arguments["line"] = "2"; arguments["column"] = "12"; }
+        if (id == "prepare.missing") arguments["tools"] = "mcpp, mcppls";
         require(!english.text(id, arguments).empty() && !chinese.text(id, arguments).empty());
     }
     require(english.text("language.position", {{"line", "2"}, {"column", "12"}}) == "Line 2, column 12");
