@@ -3,6 +3,7 @@
 import std;
 import mcpp;
 import meditor.build.catalogs;
+import meditor.build.templates;
 import meditor.build.metadata;
 import meditor.distribution;
 
@@ -13,6 +14,14 @@ int main() {
             mcpp::rerun_if_changed((resources / (std::string(language) + ".json")).string().c_str());
         const auto output = meditor::build::compile_catalogs(resources, mcpp::out_dir());
         mcpp::generated(output.string().c_str());
+        {
+            const auto templateResources = std::filesystem::path(mcpp::manifest_dir()) / "../../resources/templates";
+            std::error_code traversal;
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(templateResources, traversal))
+                if (entry.is_regular_file()) mcpp::rerun_if_changed(entry.path().string().c_str());
+            const auto templates = meditor::build::compile_templates(templateResources, mcpp::out_dir());
+            mcpp::generated(templates.string().c_str());
+        }
         const auto root = resources.parent_path().parent_path();
         for (const auto* file : {"LICENSE", "LICENSING.md", "mcpp.lock", "packaging/tools.json", "resources/product.json", "resources/licenses/manifest.json", "resources/licenses/HuxerUI-LICENSE.txt", "resources/licenses/nlohmann-json-LICENSE.txt"})
             mcpp::rerun_if_changed((root / file).string().c_str());

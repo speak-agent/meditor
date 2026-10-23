@@ -8,6 +8,7 @@ import meditor.document;
 import meditor.syntax;
 import meditor.platform;
 import meditor.language.locations;
+import meditor.templates.catalogs;
 import meditor.settings;
 import meditor.about;
 
@@ -829,6 +830,40 @@ struct Application::Impl {
             if (command == "task.wait") { std::unique_lock lock(task.mutex); if (!task.changed.wait_for(lock, std::chrono::milliseconds(std::clamp(params.value("timeoutMs", 30000), 1, 120000)), [&] { return task.state != "running"; })) throw CommandError("timeout", "Task is still running; query its task ID"); }
             return task_status(id);
         }
+        if (command == "project.new" && params.contains("template")) {
+            // Versioned meditor templates (GUI/CLI) materialize directly; the directory conflict
+            // is explicit and nothing is overwritten silently.
+            auto name = params.at("name").get<std::string>();
+            resolve(name);
+            if (name.empty() || name.starts_with('-')) throw CommandError("invalid-params", "Invalid project name");
+            const auto choice = params.at("template").get<std::string>();
+            const meditor::templates::detail::Template* selected = nullptr;
+            for (const auto& candidate : meditor::templates::detail::TEMPLATES) if (candidate.name == choice) selected = &candidate;
+            if (!selected) throw CommandError("invalid-params", "Unknown project template");
+            const auto prefix = "templates/" + choice + "/";
+            const auto directory = root / name;
+            if (std::filesystem::exists(directory)) throw CommandError("already-exists", "Target directory exists; choose another project name");
+            Json created = Json::array();
+            try {
+                for (std::size_t index = 0; index < selected->count; ++index) {
+                    const auto& file = selected->files[index];
+                    const auto relative = std::string(file.path);
+                    if (relative.find("..") != std::string::npos || relative.compare(0, prefix.size(), prefix) != 0)
+                        throw CommandError("internal-error", "Template catalog entries must stay inside their template");
+                    auto content = std::string(file.content);
+                    for (auto at = content.find("{{name}}"); at != std::string::npos; at = content.find("{{name}}", at + name.size()))
+                        content.replace(at, 7, name);
+                    const auto target = directory / std::filesystem::u8path(relative).lexically_relative(std::filesystem::path(prefix));
+                    std::filesystem::create_directories(target.parent_path());
+                    write_file_atomic(target, content);
+                    created.push_back(relative.substr(prefix.size()));
+                }
+            } catch (...) {
+                std::error_code ignored; std::filesystem::remove_all(directory, ignored); // failed materialization leaves nothing behind
+                throw;
+            }
+            return {{"created", created}, {"template", choice}};
+        }
         if (command == "build" || command == "run" || command == "test" || command == "project.new" || command == "package.search" || command == "package.add" || command == "package.remove" || command == "toolchain.list" || command == "toolchain.install" || command == "environment.prepare") {
             if (command == "build" || command == "run" || command == "test") for (auto& [id, record] : documents) if (record->document.dirty()) throw CommandError("unsaved-documents", "Save modified documents before building");
             std::vector<std::string> args {path_to_utf8(tool("mcpp"))};
@@ -932,7 +967,8 @@ const Json& Application::metadata_() {
             } else if (command.starts_with("task.")) { field("task", "string", true); field("timeoutMs", "integer"); }
             else if (command == "workspace.switch") { field("path", "string", true); field("generation", "integer", true); }
             else if (command == "workspace.trust") field("allow", "boolean", true);
-            else if (command == "project.new" || command.starts_with("package.")) field("name", "string", true);
+            else if (command == "project.new") { field("name", "string", true); field("template", "string"); properties["template"]["enum"] = Json::array({"cli", "gui"}); }
+            else if (command.starts_with("package.")) field("name", "string", true);
             else if (command == "toolchain.install") { field("family", "string", true); field("version", "string", true); }
             if (command == "build" || command == "run" || command == "test") { field("target", "string"); field("profile", "string"); field("features", "string"); }
             if (command == "build" || command == "run" || command == "test" || command == "project.new" || command.starts_with("package.") || command.starts_with("toolchain.") || command == "environment.prepare") field("timeoutMs", "integer");
