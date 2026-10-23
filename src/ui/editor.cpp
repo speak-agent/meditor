@@ -68,6 +68,60 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     syntax::Language language {syntax::Language::Plain};
     syntax::Cache syntaxCache;
     std::vector<TextRange> searchMatches;
+    struct CompletionEntry { std::string label, insert; };
+    std::vector<CompletionEntry> completions;
+    std::vector<std::size_t> completionMatches;
+    std::size_t completionSelected {};
+    bool completionActive {};
+    std::uint64_t completionDesired {};
+    TextOffset completionPrefixStart {};
+    std::string completionPrefix;
+    Rect completionBox_() const {
+        auto [row, x] = location_(value.selection.active);
+        const auto width = [&] {
+            float widest = 120.0F;
+            for (auto index : completionMatches) {
+                auto size = completions[index].label.size();
+                widest = std::max(widest, 40.0F + static_cast<float>(size) * 8.4F);
+            }
+            return std::min(widest, std::max(120.0F, viewport.width - 80.0F));
+        }();
+        const auto count = std::min<std::size_t>(completionMatches.size(), 8);
+        const auto top = 10.0F + (static_cast<float>(row) - topLine + 1) * lineHeight;
+        return {64.0F + x, std::min(top, std::max(10.0F, viewport.height - count * 20.0F - 12.0F)), width, static_cast<float>(count) * 20.0F + 8.0F};
+    }
+    bool completionShown() const { return completionActive && !completionMatches.empty(); }
+    void dismiss_completion_() { if (completionActive || !completionMatches.empty()) { completionActive = false; completionMatches.clear(); completionSelected = 0; if (changed) changed(); } }
+    void refilter_completions_() {
+        completionMatches.clear(); completionSelected = 0;
+        for (std::size_t index = 0; index < completions.size(); ++index)
+            if (completions[index].label.starts_with(completionPrefix)) completionMatches.push_back(index);
+        completionActive = !completionMatches.empty();
+    }
+    void accept_completion_() {
+        if (!completionShown() || completionSelected >= completionMatches.size()) { dismiss_completion_(); return; }
+        const auto entry = completions[completionMatches[completionSelected]];
+        auto next = value; auto endings = line_endings_();
+        try { replace_(next, {completionPrefixStart, next.selection.active}, entry.insert, endings); }
+        catch (...) { dismiss_completion_(); return; }
+        const auto guard = completionActive;
+        completionActive = false; completionMatches.clear(); completionSelected = 0;
+        publish_(next, "completion", std::move(endings));
+        (void)guard;
+    }
+    // Runs inside ApplyTextInput: publish_ already notified the tree, so this
+    // must not fire changed() re-entrantly.
+    // Runs BEFORE publish_ so the desire is visible when publish_ notifies the tree.
+    void schedule_completion_(const TextEditingValue& source) {
+        completionActive = false; completionMatches.clear(); completionSelected = 0;
+        const auto caretByte = byte_at(source.text, source.selection.active);
+        std::size_t first = caretByte;
+        const auto word = [](unsigned char ch) { return std::isalnum(ch) || ch == '_' || ch >= 0x80; };
+        while (first && word(static_cast<unsigned char>(source.text[first - 1]))) --first;
+        completionPrefixStart = units(std::string_view(source.text).substr(0, first));
+        completionPrefix = source.text.substr(first, caretByte - first);
+        ++completionDesired;
+    }
     bool revealCaret {true};
     ViewNode* focusNode {};
     bool focusWhenMounted {};
@@ -99,7 +153,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         presentation = TextPresentation(data.at("text").get<std::string>());
         value.text = presentation.text(); format = presentation.format();
         format.lineEnding = data.at("format").at("lineEnding") == "crlf" ? LineEnding::CrLf : LineEnding::Lf;
-        documentRevision = revision; searchMatches.clear();
+        documentRevision = revision; searchMatches.clear(); completionActive = false; completionMatches.clear(); completions.clear(); completionSelected = 0;
         const auto length = units(value.text);
         auto clamp = [&](TextOffset offset) {
             offset = std::clamp<TextOffset>(offset, 0, length);
@@ -215,6 +269,8 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
                 if (next.composition) { byte_at(next.text, next.composition->start); byte_at(next.text, next.composition->end); }
             }
             if ((original || baseline) && compositionGroup.empty()) compositionGroup = compositionPrefix + std::to_string(++compositionSequence);
+            const bool committedText = !next.composition && std::any_of(batch.commands.begin(), batch.commands.end(), [](const TextInputCommand& command) { return command.kind == TextInputCommandKind::CommitText; });
+            if (committedText) schedule_completion_(next);
             if (!publish_(next, compositionGroup, std::move(endings), bom)) return {TextInputResultCode::Rejected};
             baseline = original;
             if (!next.composition) compositionGroup.clear();
@@ -258,13 +314,28 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
     TextInputKeyResult HandleTextKey(const KeyEvent& event) override {
         if (event.type != KeyEventType::Down) return TextInputKeyResult::Unhandled;
         if (value.composition) return TextInputKeyResult::Unhandled;
+        if (completionShown()) {
+            if (event.key == Key::ArrowUp || event.key == Key::ArrowDown) {
+                completionSelected = (completionSelected + (event.key == Key::ArrowDown ? 1 : completionMatches.size() - 1)) % completionMatches.size();
+                if (changed) changed();
+                return TextInputKeyResult::Handled;
+            }
+            if (event.key == Key::Enter || event.key == Key::Tab) { accept_completion_(); return TextInputKeyResult::Handled; }
+            if (event.key == Key::Escape) { dismiss_completion_(); return TextInputKeyResult::Handled; }
+        }
         const auto shortcut = shortcuts::resolve(event, shortcuts::Context::Editor);
+        if (event.key == Key::Space && (event.modifiers.control || event.modifiers.meta) && !event.modifiers.alt && !event.modifiers.shift) {
+            schedule_completion_(value);
+            if (changed) changed();
+            return TextInputKeyResult::Handled;
+        }
         if (shortcut == shortcuts::Command::SelectAll) { auto next = value; next.selection = {0, units(next.text)}; publish_(next); return TextInputKeyResult::Handled; }
         if (shortcut == shortcuts::Command::Undo || shortcut == shortcuts::Command::Redo) {
             application->execute({{"command", shortcut == shortcuts::Command::Redo ? "document.redo" : "document.undo"}, {"params", {{"document", document}, {"revision", documentRevision}}}}); refresh_(); if (changed) changed(); return TextInputKeyResult::Handled;
         }
         auto next = value; auto endings = line_endings_(); auto selection = next.selection.Range(); auto caret = next.selection.active;
-        auto move = [&](TextOffset target) { if (!event.modifiers.shift) next.selection.anchor = target; next.selection.active = target; };
+        bool pendingDismiss {};
+        auto move = [&](TextOffset target) { if (!event.modifiers.shift) next.selection.anchor = target; next.selection.active = target; pendingDismiss = true; };
         auto previous = [&](TextOffset offset) { if (!offset) return offset; auto byte = byte_at(next.text, offset); --byte; while (byte && (static_cast<unsigned char>(next.text[byte]) & 0xc0) == 0x80) --byte; return units(std::string_view(next.text).substr(0, byte)); };
         auto following = [&](TextOffset offset) { auto byte = byte_at(next.text, offset); if (byte == next.text.size()) return offset; ++byte; while (byte < next.text.size() && (static_cast<unsigned char>(next.text[byte]) & 0xc0) == 0x80) ++byte; return units(std::string_view(next.text).substr(0, byte)); };
         if (event.key == Key::ArrowLeft) move(previous(caret));
@@ -277,6 +348,7 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
         else if (event.key == Key::Enter) replace_(next, selection, "\n", endings);
         else if (event.key == Key::Tab) replace_(next, selection, "    ", endings);
         else return TextInputKeyResult::Unhandled;
+        if (pendingDismiss) dismiss_completion_();
         publish_(next, {}, std::move(endings)); return TextInputKeyResult::Handled;
     }
     bool CanPerformTextEditingAction(TextEditingAction action, PlatformClipboard* clipboard) const override {
@@ -299,6 +371,11 @@ struct EditorState::Impl : TextInputClient, TextSelectionClient {
             replace_(next, range, "", endings);
         }
         return publish_(next, {}, std::move(endings));
+    }
+    void dismiss_completion_if_caret_moved_() {
+        if (!completionShown()) return;
+        const auto caret = value.selection.active;
+        if (caret < completionPrefixStart || caret > completionPrefixStart + static_cast<TextOffset>(units(completionPrefix))) dismiss_completion_();
     }
     bool ClearSelection() override {
         if (value.selection.IsCollapsed()) return false;
@@ -351,6 +428,17 @@ public:
     bool HitTest(ViewNode& node, Point point) const override { return point.x >= 0 && point.y >= 0 && point.x <= node.Bounds().width && point.y <= node.Bounds().height; }
     void OnFocusChanged(ViewNode&, bool focused, bool) override { focused_ = focused; InvalidatePaint(); }
     PointerResult OnPointer(ViewNode&, const PointerEvent& event) override {
+        if (event.type == PointerEventType::Down && model_->completionShown()) {
+            const auto box = model_->completionBox_();
+            if (event.position.x >= box.x && event.position.x <= box.x + box.width && event.position.y >= box.y && event.position.y <= box.y + box.height) {
+                auto row = static_cast<std::size_t>(std::clamp((event.position.y - box.y - 2) / 20.0F, 0.0F, 1e9F));
+                const auto count = std::min<std::size_t>(model_->completionMatches.size(), 8);
+                if (row < count) { model_->completionSelected = row; model_->accept_completion_(); InvalidatePaint(); }
+                else model_->dismiss_completion_();
+                return PointerResult::Handled;
+            }
+            model_->dismiss_completion_();
+        }
         if (event.type == PointerEventType::Down || (event.type == PointerEventType::Move && dragging_)) {
             auto hit = model_->QueryTextInputPosition(model_->input.session_id, event.position);
             auto value = model_->value; if (!dragging_) value.selection.anchor = hit.position.offset; value.selection.active = hit.position.offset;
@@ -440,6 +528,20 @@ public:
             context.DrawText({64, static_cast<float>(y), std::max(0.0F, model.viewport.width - 72), model.lineHeight}, AttributedText::FromRanges(text, std::move(ranges)), style);
         }
         if (focused_) context.DrawRect(geometry.caret, Color::Rgb(112, 171, 255));
+        if (model.completionShown()) {
+            const auto box = model.completionBox_();
+            context.DrawRect(box, model.dark ? Color::Rgb(24, 31, 43) : Color::Rgb(255, 255, 255));
+            context.DrawRect({box.x, box.y, box.width, box.height}, model.dark ? Color::Rgb(56, 72, 96) : Color::Rgb(202, 214, 231));
+            context.DrawRect({box.x, box.y + box.height - 1, box.width, 1}, model.dark ? Color::Rgb(56, 72, 96) : Color::Rgb(202, 214, 231));
+            auto row = 0;
+            for (auto index : model.completionMatches) {
+                const auto selected = static_cast<std::size_t>(row) == model.completionSelected;
+                if (selected) context.DrawRect({box.x + 2, box.y + 2 + row * 20.0F, box.width - 4, 20.0F}, model.dark ? Color::Rgb(38, 57, 83) : Color::Rgb(219, 232, 251));
+                context.DrawText({box.x + 10, box.y + 2 + row * 20.0F, box.width - 16, 20.0F}, model.completions[index].label,
+                    {.font = Font::Monospace(13), .foreground = selected ? (model.dark ? Color::Rgb(158, 202, 255) : Color::Rgb(33, 82, 165)) : (model.dark ? Color::Rgb(213, 221, 233) : Color::Rgb(35, 47, 65))});
+                if (++row >= 8) break;
+            }
+        }
     }
 };
 }
@@ -478,6 +580,25 @@ void EditorState::focus_when_mounted() {
 Position EditorState::lsp_position() const {
     return utf8_position_at(impl_->presentation.raw_text(), impl_->presentation.raw_offset(byte_at(impl_->value.text, impl_->value.selection.active)));
 }
+void EditorState::set_completions(std::vector<CompletionItem> items, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return;
+    impl_->completions.clear();
+    for (auto& item : items) impl_->completions.push_back({std::move(item.label), item.insert.empty() ? item.label : std::move(item.insert)});
+    if (impl_->completions.empty()) { impl_->dismiss_completion_(); return; }
+    impl_->refilter_completions_();
+    if (impl_->changed) impl_->changed();
+}
+EditorState::CompletionSnapshot EditorState::completion_snapshot() const {
+    CompletionSnapshot snapshot;
+    snapshot.visible = impl_->completionShown();
+    snapshot.desired = impl_->completionDesired;
+    snapshot.prefix = impl_->completionPrefix;
+    for (std::size_t row = 0; row < impl_->completionMatches.size() && row < 8; ++row) snapshot.items.push_back(impl_->completions[impl_->completionMatches[row]].label);
+    snapshot.selected = impl_->completionSelected;
+    return snapshot;
+}
+void EditorState::dismiss_completion() { impl_->dismiss_completion_(); }
+bool EditorState::completion_visible() const { return impl_->completionShown(); }
 bool EditorState::set_search_results(std::vector<TextRange> matches, std::uint64_t revision) {
     if (revision != impl_->documentRevision) return false;
     TextOffset end {};

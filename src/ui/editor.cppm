@@ -26,6 +26,12 @@ public:
     bool request_focus();
     void focus_when_mounted();
     Position lsp_position() const;
+    struct CompletionItem { std::string label; std::string insert; };
+    struct CompletionSnapshot { bool visible {}; std::uint64_t desired {}; std::string prefix; std::vector<std::string> items; std::size_t selected {}; };
+    void set_completions(std::vector<CompletionItem> items, std::uint64_t revision);
+    CompletionSnapshot completion_snapshot() const;
+    void dismiss_completion();
+    bool completion_visible() const;
     bool select_match(huxerui::TextSelection selection, std::uint64_t revision);
     bool set_search_results(std::vector<huxerui::TextRange> matches, std::uint64_t revision);
     void clear_search_results();

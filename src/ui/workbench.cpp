@@ -79,6 +79,8 @@ struct WorkspaceModel {
     bool busy {};
     bool choosing {};
     std::string activeTask, taskKind, taskStateKey {"status.ready"}, bottomPanel;
+    std::uint64_t completionSequence {0};
+    std::function<void()> completionDriver;
     std::uint64_t generation {};
     bool dark {true};
     bool reducedMotion {};
@@ -243,12 +245,61 @@ View workbench(WorkspaceServices services) {
             if (!result.value("ok", false)) data->report_error(result["error"]);
             refresh(); return result;
         };
+        auto driveCompletion = [data, tasks, refresh] {
+            if (data->active.empty() || !data->application || !data->editors.contains(data->active)) return;
+            const auto editor = data->editors.at(data->active);
+            if (editor->language_id() != "cpp") return;
+            const auto snapshot = editor->completion_snapshot();
+            if (snapshot.desired == data->completionSequence) return;
+            const auto previous = data->completionSequence;
+            data->completionSequence = snapshot.desired;
+            const auto position = editor->lsp_position();
+            auto reply = data->application->execute({{"command", "language.query"}, {"params", {
+                {"document", data->active}, {"revision", editor->revision()}, {"operation", "completion"},
+                {"position", {{"line", position.line}, {"character", position.character}}}, {"timeoutMs", 8000}}}});
+            if (!reply.value("ok", false)) { data->completionSequence = previous; editor->dismiss_completion(); refresh(); return; }
+            const auto id = reply["data"]["query"].get<std::string>();
+            const auto application = data->application; const auto generation = data->generation;
+            const auto document = data->active; const auto revision = editor->revision();
+            const auto desired = snapshot.desired;
+            try {
+            tasks.Launch([=]() -> Task<void> {
+                for (;;) {
+                    co_await Delay(std::chrono::milliseconds(40));
+                    if (data->application != application || data->generation != generation) { editor->dismiss_completion(); refresh(); co_return; }
+                    if (data->editors.find(document) == data->editors.end()) co_return;
+                    if (data->editors.at(document)->completion_snapshot().desired != desired) co_return; // superseded by newer typing
+                    const auto result = application->execute({{"command", "language.result"}, {"params", {{"query", id}}}});
+                    if (!result.value("ok", false)) { editor->dismiss_completion(); refresh(); co_return; }
+                    const auto state = result["data"].value("state", "failed");
+                    if (state == "running") continue;
+                    if (state == "succeeded" && !result["data"].value("stale", true)) {
+                        std::vector<EditorState::CompletionItem> items;
+                        const auto& payload = result["data"].contains("result") && result["data"]["result"].contains("items") ? result["data"]["result"]["items"] : Json::array();
+                        for (const auto& item : payload) {
+                            EditorState::CompletionItem entry;
+                            entry.label = item.value("label", "");
+                            if (entry.label.empty()) continue;
+                            entry.insert = item.value("insertText", entry.label);
+                            items.push_back(std::move(entry));
+                        }
+                        editor->set_completions(std::move(items), revision);
+                    } else editor->dismiss_completion();
+                    refresh(); co_return;
+                }
+            });
+            } catch (...) { data->completionSequence = previous; } // Launch is only legal from event contexts; the next change retries.
+        };
+        data->completionDriver = driveCompletion;
         auto open = [data, refresh, run](std::string name) {
             auto result = run("document.open", {{"path", name}});
             if (!result.is_object() || !result.value("ok", false)) return;
             auto id = result["data"]["document"].get<std::string>();
             if (data->active != id && !data->languageOperation.empty()) { data->cancel_language(); data->languageRows.clear(); data->languageState = "language.stale"; }
-            if (!data->editors.contains(id)) { data->editors[id] = std::make_shared<EditorState>(data->application, id, refresh); data->tabs.push_back(id); }
+            if (!data->editors.contains(id)) {
+                data->editors[id] = std::make_shared<EditorState>(data->application, id, [data, refresh] { refresh(); if (data->completionDriver) data->completionDriver(); });
+                data->tabs.push_back(id);
+            }
             data->active = id; data->detail(name); refresh();
         };
         Lifecycle([data, refresh, open, host] {
@@ -559,7 +610,10 @@ View workbench(WorkspaceServices services) {
                                         refresh(); return;
                                     }
                                     const auto& target = reply["data"]["target"]; const auto id = target["document"].get<std::string>();
-                                    if (!data->editors.contains(id)) { data->editors[id] = std::make_shared<EditorState>(data->application, id, refresh); data->tabs.push_back(id); }
+                                    if (!data->editors.contains(id)) {
+                data->editors[id] = std::make_shared<EditorState>(data->application, id, [data, refresh] { refresh(); if (data->completionDriver) data->completionDriver(); });
+                data->tabs.push_back(id);
+            }
                                     data->active = id;
                                     const auto& range = reply["data"]["range"];
                                     const Position start {range["start"]["line"].get<std::size_t>(), range["start"]["character"].get<std::size_t>()}, end {range["end"]["line"].get<std::size_t>(), range["end"]["character"].get<std::size_t>()};
@@ -685,7 +739,9 @@ View workbench(WorkspaceServices services) {
                 compact ? View{} : View(Text(languageLabel + formatLabel, TextRole::Label).Key("document-language").With(Foreground(muted))),
                 data->selected ? View(Button(t("task.output")).Key("output-toggle").With(Enabled(!data->taskKind.empty()), Border{data->busy ? colors.accent : Color::Transparent(), 1}).OnClick([data, refresh] { data->bottomPanel = data->bottomPanel == "output" ? "" : "output"; refresh(); })) : View{},
                 Button(t("about.entry")).Key("about-entry").OnClick(showAbout),
-                Button(t("settings.title")).Key("settings-entry").OnClick(showSettings)
+                Button(t("settings.title")).Key("settings-entry").OnClick(showSettings),
+                !data->active.empty() && data->editors.contains(data->active) && data->editors.at(data->active)->completion_visible()
+                    ? View(Spacer().Key("completion-active").With(Frame{.width = 0.0F, .height = 0.0F})) : View{}
             }.Key("status-bar").With(Padding(10), Spacing(8), Background(pane))
         }.With(Background(background), Foreground(ink), CrossAlign(CrossAxisAlignment::Stretch))
             .On<ViewEvents::KeyIntercept>([save, data, refresh, openSearch, queryLanguage](const KeyEvent& event) {
