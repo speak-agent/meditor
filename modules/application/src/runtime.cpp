@@ -10,7 +10,7 @@ namespace {
 std::string utf8(const std::filesystem::path& path) {
     const auto value = path.u8string(); return {value.begin(), value.end()};
 }
-std::filesystem::path portable_data(const std::filesystem::path& marker) {
+std::filesystem::path portable_data(const std::filesystem::path& marker) { // validated core, reused by the exported wrapper below
     using Json = nlohmann::json;
     const auto descriptor = Json::parse(read_file(marker, 16 * 1024));
     if (!descriptor.is_object() || !descriptor.contains("schemaVersion") ||
@@ -55,6 +55,7 @@ void validate_storage(const RuntimeDirectories& directories) {
     }
 }
 }
+std::filesystem::path portable_data_directory(const std::filesystem::path& marker) { return portable_data(marker); }
 RuntimeDirectories RuntimeDirectories::resolve(const RuntimeOptions& options) {
     auto binary = options.binaryDirectory.empty() ? executable_directory() : options.binaryDirectory;
     if (binary.empty() || !binary.is_absolute() || !std::filesystem::is_directory(binary))

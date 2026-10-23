@@ -20,4 +20,6 @@ struct RuntimeDirectories {
     ProcessEnvironment tool_environment() const;
     void prepare_tools() const;
 };
+// Parses and validates a portable.json marker, returning its relative data directory.
+std::filesystem::path portable_data_directory(const std::filesystem::path& marker);
 }

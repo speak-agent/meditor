@@ -758,6 +758,59 @@ struct Application::Impl {
             for (auto name : {"mcpp", "mcppls"}) { try { tool(name); result["tools"][name] = {{"available", true}}; } catch (...) { result["tools"][name] = {{"available", false}}; } }
             return result;
         }
+        if (command == "portable.update" || command == "portable.uninstall") {
+            if (!runtime.portable) throw CommandError("not-portable", "Portable lifecycle operations require a portable installation");
+            const auto root = runtime.installationRoot;
+            auto reply = Json::object();
+            if (command == "portable.update") {
+                const auto payload = std::filesystem::u8path(params.at("payload").get<std::string>());
+                if (payload.empty() || !payload.is_absolute()) throw CommandError("invalid-params", "Payload must be an absolute extracted directory");
+                std::filesystem::path payloadData;
+                try { payloadData = portable_data_directory(payload / "portable.json"); }
+                catch (const std::exception&) { throw CommandError("invalid-payload", "Payload portable.json is missing or invalid"); }
+                if (!std::filesystem::is_directory(payload / "bin")) throw CommandError("invalid-payload", "Payload must carry a bin directory");
+                const auto dataName = portable_data_directory(root / "portable.json").filename();
+                if (payloadData.filename() != dataName) throw CommandError("invalid-payload", "Payload uses a different data directory layout");
+                const auto parent = root.parent_path();
+                const auto stamp = std::to_string(std::random_device{}());
+                const auto incoming = parent / (root.filename().u8string() + std::u8string(u8".incoming-") + std::u8string(stamp.begin(), stamp.end()));
+                const auto backup = parent / (root.filename().u8string() + std::u8string(u8".backup-") + std::u8string(stamp.begin(), stamp.end()));
+                // The data directory moves (never copies) so a crash cannot leave two live copies; every
+                // failure path restores it before anything is deleted.
+                try {
+                    std::filesystem::remove_all(incoming);
+                    std::filesystem::copy(payload, incoming, std::filesystem::copy_options::recursive);
+                    std::filesystem::rename(root / dataName, incoming / dataName);
+                    try {
+                        std::filesystem::rename(root, backup);
+                        try { std::filesystem::rename(incoming, root); }
+                        catch (...) { std::filesystem::rename(backup, root); throw; } // swap failed: root is back, data still staged
+                    } catch (...) { std::filesystem::rename(incoming / dataName, root / dataName); std::filesystem::remove_all(incoming); throw; }
+                    // The swap landed; verify the new root, otherwise reverse it completely.
+                    const auto verified = std::filesystem::is_regular_file(root / "portable.json") && std::filesystem::is_directory(root / "bin") && std::filesystem::is_directory(root / dataName);
+                    if (!verified) {
+                        std::filesystem::rename(root, incoming);
+                        std::filesystem::rename(backup, root);
+                        std::filesystem::rename(incoming / dataName, root / dataName);
+                        std::filesystem::remove_all(incoming);
+                        throw CommandError("update-verification-failed", "The staged payload failed verification; the previous installation was restored");
+                    }
+                    std::filesystem::remove_all(backup);
+                    reply = {{"updated", true}, {"rolledBack", false}, {"dataPreserved", true}};
+                } catch (const CommandError&) { throw; }
+                catch (const std::exception& failure) {
+                    throw CommandError("update-failed", std::string("Portable update failed: ") + failure.what());
+                }
+            } else {
+                const auto removeData = params.value("removeData", false);
+                const auto dataName = portable_data_directory(root / "portable.json").filename();
+                const auto dataRemoved = removeData && std::filesystem::remove_all(root / dataName) > 0;
+                // Portable apps are removed by deleting their directory; the command never touches user projects.
+                reply = {{"dataRemoved", dataRemoved}, {"payloadRemains", std::filesystem::exists(root)},
+                    {"note", "Delete the installation directory to finish removal; user projects outside it are untouched"}};
+            }
+            return reply;
+        }
         if (command == "task.status" || command == "task.wait" || command == "task.cancel") {
             auto id = params.at("task").get<std::string>(); if (!tasks.contains(id)) throw CommandError("not-found", "Task does not exist");
             auto& task = *tasks.at(id);
@@ -842,7 +895,7 @@ std::string Application::session_id() const { return impl_->session; }
 const Json& Application::metadata_() {
     static const Json metadata = []() -> Json {
         Json commands = Json::array();
-        for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.canLeave", "workspace.switch", "workspace.files", "workspace.trust", "document.open", "document.read", "document.status", "document.highlight", "document.find", "document.replace", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "language.query", "language.result", "language.cancel", "language.navigate", "language.release", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
+        for (auto name : {"about", "licenses", "capabilities", "workspace.status", "workspace.canLeave", "workspace.switch", "workspace.files", "workspace.trust", "document.open", "document.read", "document.status", "document.highlight", "document.find", "document.replace", "document.edit", "document.undo", "document.redo", "document.save", "doctor", "build", "run", "test", "task.status", "task.wait", "task.cancel", "project.new", "package.search", "package.add", "package.remove", "toolchain.list", "toolchain.install", "environment.prepare", "portable.update", "portable.uninstall", "language.query", "language.result", "language.cancel", "language.navigate", "language.release", "language.completion", "language.hover", "language.definition", "language.references", "language.symbols", "language.signature", "language.diagnostics", "language.stop", "modules.graph", "modules.info", "modules.contexts"}) commands.push_back(name);
         commands.push_back("settings.get"); commands.push_back("settings.update");
         Json operations = Json::array(); for (const auto& [name, method] : Impl::query_methods()) operations.push_back(name);
         Json schemas = Json::object();
@@ -853,6 +906,8 @@ const Json& Application::metadata_() {
             if (command == "settings.update") { field("revision", "integer", true); field("changes", "object", true); }
             else if (command == "language.query") { field("document", "string", true); field("revision", "integer", true); field("operation", "string", true); field("position", "object"); field("range", "object"); field("name", "string"); field("timeoutMs", "integer"); properties["operation"]["enum"] = operations; properties["timeoutMs"]["minimum"] = 100; properties["timeoutMs"]["maximum"] = 120000; }
             else if (command == "language.result" || command == "language.cancel" || command == "language.release") { field("query", "string", true); if (command == "language.result") field("includeResult", "boolean"); }
+            else if (command == "portable.update") { field("payload", "string", true); }
+            else if (command == "portable.uninstall") { field("removeData", "boolean"); }
             else if (command == "language.navigate") { field("query", "string", true); field("location", "integer", true); }
             else if (command == "document.open") { field("path", "string", true); field("create", "boolean"); }
             else if (command.starts_with("document.") || command.starts_with("language.") || command.starts_with("modules.")) {

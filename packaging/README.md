@@ -38,3 +38,19 @@ Build and package from the exported `source` workspace with mcpp, then scan the 
 The current release-mode Linux GUI probe maps application source paths successfully but still fails the artifact scan: the staged CLI retains its loader/RPATH, and some bundled libraries and upstream tool binaries retain build paths. No candidate is approved for publication. Compiler mappings do not rewrite prebuilt dependencies; these failures require proper runtime packaging or corrected upstream inputs. Do not alter licenses, remove the affected tools, or relax the check to obtain a passing result.
 
 Android, iOS and Web do not use these native desktop archives as executable tools. Their verified host/bridge strategy is still required. The Android APK startup probe is separate from native desktop tool delivery. Tool supply through xim-pkgindex and the default source example archives remain implementation work; this preparation does not replace the index or create another package manager.
+
+## Portable update, rollback and uninstall
+
+Portable packages carry `portable.json` (schemaVersion 1, `dataDirectory`). The
+`portable.update` command swaps a validated candidate payload into the
+installation root: the candidate must present its own valid marker and a `bin/`
+directory with the same data layout, the user data directory is *moved* (never
+copied) into the staged payload before the directory swap, and any failure path
+restores it before deleting staging directories. A failed swap rolls the
+previous installation back; a verified swap removes the one-generation backup.
+`portable.uninstall` removes portable data on explicit request and reports that
+deleting the installation directory stays a user action; user projects outside
+the payload are never touched. Both commands reject installed (non-portable)
+runtimes with `not-portable`. Directory renames cannot replace a payload whose
+files are locked by the running process on Windows; there the installer path
+performs the swap, which is why archives remain the primary deliverable.
