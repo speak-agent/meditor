@@ -1,0 +1,762 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Sunrisepeak & mcpp-community
+module;
+#if defined(_WIN32)
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <afunix.h>
+#include <windows.h>
+#include <cstdio>
+#pragma comment(lib, "ws2_32.lib")
+#elif !defined(__EMSCRIPTEN__)
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <cerrno>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <crt_externs.h>
+#else
+extern "C" char** environ;
+#endif
+#endif
+module meditor.platform;
+import std;
+
+namespace meditor {
+void prepare_cli_console() {
+#if defined(_WIN32)
+    auto missing = [](DWORD stream) { const auto handle = GetStdHandle(stream); return !handle || handle == INVALID_HANDLE_VALUE; };
+    const bool input = missing(STD_INPUT_HANDLE), output = missing(STD_OUTPUT_HANDLE), error = missing(STD_ERROR_HANDLE);
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    FILE* attached {};
+    if (input) freopen_s(&attached, "CONIN$", "r", stdin);
+    if (output) freopen_s(&attached, "CONOUT$", "w", stdout);
+    if (error) freopen_s(&attached, "CONOUT$", "w", stderr);
+#endif
+}
+struct FileLock::Impl {
+#if defined(_WIN32)
+    HANDLE file {INVALID_HANDLE_VALUE};
+    ~Impl() { if (file != INVALID_HANDLE_VALUE) CloseHandle(file); }
+#elif !defined(__EMSCRIPTEN__)
+    int file {-1};
+    ~Impl() { if (file >= 0) close(file); }
+#endif
+};
+FileLock::FileLock(const std::filesystem::path& path) : impl_(std::make_unique<Impl>()) {
+#if defined(__EMSCRIPTEN__)
+    throw std::runtime_error("File locking requires a native storage adapter");
+#elif defined(_WIN32)
+    impl_->file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (impl_->file == INVALID_HANDLE_VALUE) throw std::runtime_error("Could not open the file lock");
+    BY_HANDLE_FILE_INFORMATION info {};
+    if (!GetFileInformationByHandle(impl_->file, &info) || (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)))
+        throw std::runtime_error("File lock must be a regular file");
+    OVERLAPPED position {};
+    if (!LockFileEx(impl_->file, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &position))
+        throw std::runtime_error("File lock is busy; retry the operation");
+#else
+    impl_->file = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (impl_->file < 0) throw std::runtime_error("Could not open the file lock");
+    struct stat info {};
+    if (fstat(impl_->file, &info) || !S_ISREG(info.st_mode)) throw std::runtime_error("File lock must be a regular file");
+    if (flock(impl_->file, LOCK_EX | LOCK_NB)) throw std::runtime_error("File lock is busy; retry the operation");
+#endif
+}
+FileLock::~FileLock() = default;
+struct Process::Impl {
+#if defined(_WIN32)
+    HANDLE process {}, input {}, output {}, job {};
+#elif !defined(__EMSCRIPTEN__)
+    pid_t process {-1}; int input {-1}, output {-1};
+#endif
+    std::optional<int> code;
+};
+Process::Process() : impl_(std::make_unique<Impl>()) {}
+Process::~Process() { terminate(); }
+Process::Process(Process&&) noexcept = default;
+Process& Process::operator=(Process&& other) noexcept {
+    if (this != &other) { terminate(); impl_ = std::move(other.impl_); }
+    return *this;
+}
+#if defined(_WIN32)
+namespace {
+std::wstring wide(std::string_view text) {
+    int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (!size && !text.empty()) throw std::runtime_error("Invalid UTF-8 process argument");
+    std::wstring value(size, L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), value.data(), size); return value;
+}
+std::wstring quote(std::string_view text) {
+    auto value = wide(text); std::wstring result = L"\""; std::size_t slashes {};
+    for (auto ch : value) {
+        if (ch == L'\\') { ++slashes; continue; }
+        if (ch == L'"') result.append(slashes * 2 + 1, L'\\');
+        else result.append(slashes, L'\\');
+        slashes = 0; result += ch;
+    }
+    result.append(slashes * 2, L'\\'); return result + L'"';
+}
+std::vector<wchar_t> environment_block(const ProcessEnvironment& overrides) {
+    struct KeyLess {
+        bool operator()(const std::wstring& left, const std::wstring& right) const {
+            return CompareStringOrdinal(left.data(), static_cast<int>(left.size()), right.data(), static_cast<int>(right.size()), TRUE) == CSTR_LESS_THAN;
+        }
+    };
+    std::map<std::wstring, std::wstring, KeyLess> values;
+    std::unique_ptr<wchar_t, decltype(&FreeEnvironmentStringsW)> inherited(GetEnvironmentStringsW(), FreeEnvironmentStringsW);
+    if (!inherited) throw std::runtime_error("Could not read the process environment");
+    for (auto* item = inherited.get(); *item;) {
+        std::wstring entry(item); item += entry.size() + 1;
+        auto separator = entry.find(L'=', 1);
+        if (separator != std::wstring::npos) values[entry.substr(0, separator)] = entry.substr(separator + 1);
+    }
+    for (const auto& [key, value] : overrides) {
+        auto name = wide(key);
+        if (value) values[name] = wide(*value); else values.erase(name);
+    }
+    std::vector<wchar_t> block;
+    for (const auto& [key, value] : values) {
+        block.insert(block.end(), key.begin(), key.end()); block.push_back(L'=');
+        block.insert(block.end(), value.begin(), value.end()); block.push_back(L'\0');
+    }
+    block.push_back(L'\0'); if (block.size() == 1) block.push_back(L'\0');
+    return block;
+}
+}
+#endif
+void Process::start(const std::vector<std::string>& args, const std::filesystem::path& directory, bool mergeErrors, const ProcessEnvironment& environment) {
+    if (!impl_) impl_ = std::make_unique<Impl>();
+    if (args.empty()) throw std::runtime_error("Empty process command");
+    for (const auto& arg : args) if (arg.find('\0') != std::string::npos) throw std::runtime_error("Invalid process argument");
+    for (const auto& [key, value] : environment)
+        if (key.empty() || key.find('=') != std::string::npos || key.find('\0') != std::string::npos || (value && value->find('\0') != std::string::npos))
+            throw std::runtime_error("Invalid process environment entry");
+    if (!environment.empty() && !std::filesystem::u8path(args.front()).is_absolute())
+        throw std::runtime_error("An isolated tool environment requires an absolute executable");
+#if defined(__EMSCRIPTEN__)
+    throw std::runtime_error("Local tool processes are unavailable in a browser");
+#elif defined(_WIN32)
+    if (impl_->process) throw std::runtime_error("Process already started");
+    std::wstring command; for (const auto& arg : args) { if (!command.empty()) command += L' '; command += quote(arg); }
+    auto childEnvironment = environment.empty() ? std::vector<wchar_t>{} : environment_block(environment);
+    auto cwd = directory.wstring();
+    SECURITY_ATTRIBUTES attributes {sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE childInput {}, childOutput {};
+    if (!CreatePipe(&childInput, &impl_->input, &attributes, 0)) throw std::runtime_error("Could not create process input");
+    if (!CreatePipe(&impl_->output, &childOutput, &attributes, 0)) { CloseHandle(childInput); CloseHandle(impl_->input); impl_->input = nullptr; throw std::runtime_error("Could not create process output"); }
+    SetHandleInformation(impl_->input, HANDLE_FLAG_INHERIT, 0); SetHandleInformation(impl_->output, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nullError = mergeErrors ? nullptr : CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes, OPEN_EXISTING, 0, nullptr);
+    STARTUPINFOW startup {}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = childInput; startup.hStdOutput = childOutput; startup.hStdError = mergeErrors ? childOutput : nullError;
+    PROCESS_INFORMATION process {};
+    bool started = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+        childEnvironment.empty() ? nullptr : childEnvironment.data(), cwd.empty() ? nullptr : cwd.c_str(), &startup, &process);
+    CloseHandle(childInput); CloseHandle(childOutput); if (nullError && nullError != INVALID_HANDLE_VALUE) CloseHandle(nullError);
+    if (!started) { CloseHandle(impl_->input); CloseHandle(impl_->output); impl_->input = impl_->output = nullptr; throw std::runtime_error("Tool could not be started"); }
+    impl_->process = process.hProcess;
+    impl_->job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits {}; limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!impl_->job || !SetInformationJobObject(impl_->job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) || !AssignProcessToJobObject(impl_->job, impl_->process)) {
+        TerminateProcess(impl_->process, 125); CloseHandle(process.hThread); throw std::runtime_error("Could not isolate the tool process");
+    }
+    ResumeThread(process.hThread); CloseHandle(process.hThread);
+#else
+    if (impl_->process > 0) throw std::runtime_error("Process already started");
+    int input[2], output[2];
+    if (pipe(input)) throw std::runtime_error("Could not create process input");
+    if (pipe(output)) { close(input[0]); close(input[1]); throw std::runtime_error("Could not create process output"); }
+    std::vector<char*> arguments; for (const auto& arg : args) arguments.push_back(const_cast<char*>(arg.c_str())); arguments.push_back(nullptr);
+    std::vector<std::string> environmentStorage;
+    std::vector<char*> environmentPointers;
+    if (!environment.empty()) {
+        std::map<std::string, std::string> values;
+#if defined(__APPLE__)
+        auto** inherited = *_NSGetEnviron();
+#else
+        auto** inherited = environ;
+#endif
+        for (auto** item = inherited; item && *item; ++item) {
+            std::string entry(*item); auto separator = entry.find('=');
+            if (separator != std::string::npos) values[entry.substr(0, separator)] = entry.substr(separator + 1);
+        }
+        for (const auto& [key, value] : environment) { if (value) values[key] = *value; else values.erase(key); }
+        for (const auto& [key, value] : values) environmentStorage.push_back(key + "=" + value);
+        for (auto& entry : environmentStorage) environmentPointers.push_back(entry.data());
+        environmentPointers.push_back(nullptr);
+    }
+    impl_->process = fork();
+    if (!impl_->process) {
+        setpgid(0, 0); dup2(input[0], STDIN_FILENO); dup2(output[1], STDOUT_FILENO);
+        if (mergeErrors) dup2(output[1], STDERR_FILENO);
+        else { int fd = open("/dev/null", O_WRONLY); if (fd >= 0) { dup2(fd, STDERR_FILENO); close(fd); } }
+        close(input[0]); close(input[1]); close(output[0]); close(output[1]);
+        if (!directory.empty() && chdir(directory.c_str())) _exit(125);
+        if (environment.empty()) execvp(arguments[0], arguments.data());
+        else execve(arguments[0], arguments.data(), environmentPointers.data());
+        _exit(errno == ENOENT ? 127 : 126);
+    }
+    close(input[0]); close(output[1]);
+    if (impl_->process < 0) { close(input[1]); close(output[0]); throw std::runtime_error("Tool could not be started"); }
+    setpgid(impl_->process, impl_->process);
+    impl_->input = input[1]; impl_->output = output[0];
+    fcntl(impl_->input, F_SETFD, FD_CLOEXEC); fcntl(impl_->output, F_SETFD, FD_CLOEXEC);
+    fcntl(impl_->output, F_SETFL, fcntl(impl_->output, F_GETFL) | O_NONBLOCK);
+    if (fcntl(impl_->input, F_SETFL, fcntl(impl_->input, F_GETFL) | O_NONBLOCK) < 0) { terminate(); throw std::runtime_error("Could not configure process input"); }
+#endif
+}
+void Process::write(std::string_view data, std::chrono::milliseconds timeout, std::stop_token stop) {
+    if (timeout <= std::chrono::milliseconds::zero()) throw std::invalid_argument("Process write timeout must be positive");
+#if defined(__EMSCRIPTEN__)
+    throw std::runtime_error("Tool processes unavailable");
+#else
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    try {
+#if defined(_WIN32)
+        struct ThreadHandle { HANDLE handle {}; ~ThreadHandle() { if (handle) CloseHandle(handle); } } thread;
+        if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &thread.handle, 0, FALSE, DUPLICATE_SAME_ACCESS))
+            throw std::runtime_error("Could not configure process input cancellation");
+        std::mutex cancelMutex; std::condition_variable_any changed;
+        std::stop_callback cancellation(stop, [&] { std::lock_guard lock(cancelMutex); changed.notify_all(); });
+        std::jthread watchdog([&](std::stop_token done) {
+            std::unique_lock lock(cancelMutex);
+            changed.wait_until(lock, done, deadline, [&] { return stop.stop_requested(); });
+            // Repeated cancellation covers the gap between timeout checks and WriteFile.
+            while (!done.stop_requested()) {
+                CancelSynchronousIo(thread.handle);
+                changed.wait_for(lock, done, std::chrono::milliseconds(5), [] { return false; });
+            }
+        });
+#endif
+        while (!data.empty()) {
+            if (stop.stop_requested()) throw std::runtime_error("Tool input cancelled");
+            if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error("Tool input timed out");
+#if defined(_WIN32)
+            DWORD sent {};
+            if (!impl_->input || !WriteFile(impl_->input, data.data(), static_cast<DWORD>(std::min<std::size_t>(data.size(), 65536)), &sent, nullptr) || !sent)
+                throw std::runtime_error(stop.stop_requested() ? "Tool input cancelled" : std::chrono::steady_clock::now() >= deadline ? "Tool input timed out" : "Tool input closed");
+#else
+            if (impl_->input < 0) throw std::runtime_error("Tool input closed");
+            signal(SIGPIPE, SIG_IGN);
+            auto sent = ::write(impl_->input, data.data(), std::min<std::size_t>(data.size(), 65536));
+            if (sent < 0 && errno == EINTR) continue;
+            if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                pollfd descriptor {impl_->input, POLLOUT, 0};
+                auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+                const auto result = ::poll(&descriptor, 1, static_cast<int>(std::clamp<std::int64_t>(remaining, 1, 20)));
+                if (result < 0 && errno != EINTR) throw std::runtime_error("Tool input closed");
+                if (result > 0 && (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))) throw std::runtime_error("Tool input closed");
+                continue;
+            }
+            if (sent <= 0) throw std::runtime_error("Tool input closed");
+#endif
+            data.remove_prefix(static_cast<std::size_t>(sent));
+        }
+    } catch (...) { close_input(); throw; }
+#endif
+}
+void Process::close_input() {
+    if (!impl_) return;
+#if defined(_WIN32)
+    if (impl_->input) { CloseHandle(impl_->input); impl_->input = nullptr; }
+#elif !defined(__EMSCRIPTEN__)
+    if (impl_->input >= 0) { close(impl_->input); impl_->input = -1; }
+#endif
+}
+ProcessRead Process::read(std::chrono::milliseconds timeout) {
+    std::array<char, 16384> bytes;
+#if defined(__EMSCRIPTEN__)
+    return {{}, true};
+#elif defined(_WIN32)
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    do {
+        DWORD available {};
+        if (!impl_->output || !PeekNamedPipe(impl_->output, nullptr, 0, nullptr, &available, nullptr)) return {{}, true};
+        if (available) { DWORD count {}; if (!ReadFile(impl_->output, bytes.data(), std::min<DWORD>(available, bytes.size()), &count, nullptr)) return {{}, true}; return {std::string(bytes.data(), count), false}; }
+        if (poll()) return {{}, true};
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } while (std::chrono::steady_clock::now() < deadline);
+    return {};
+#else
+    if (impl_->output < 0) return {{}, true};
+    pollfd descriptor {impl_->output, POLLIN, 0};
+    int result; do { result = ::poll(&descriptor, 1, static_cast<int>(timeout.count())); } while (result < 0 && errno == EINTR);
+    if (!result) return {};
+    auto count = ::read(impl_->output, bytes.data(), bytes.size());
+    if (count > 0) return {std::string(bytes.data(), count), false};
+    if (count < 0 && (errno == EAGAIN || errno == EINTR)) return {};
+    return {{}, true};
+#endif
+}
+std::optional<int> Process::poll() {
+    if (!impl_) return {};
+    if (impl_->code) return impl_->code;
+#if defined(_WIN32)
+    if (!impl_->process || WaitForSingleObject(impl_->process, 0) != WAIT_OBJECT_0) return {};
+    DWORD value {}; GetExitCodeProcess(impl_->process, &value); impl_->code = static_cast<int>(value);
+#elif !defined(__EMSCRIPTEN__)
+    if (impl_->process <= 0) return {};
+    int status {}; auto result = waitpid(impl_->process, &status, WNOHANG);
+    if (!result || (result < 0 && errno == EINTR)) return {};
+    impl_->code = result < 0 ? 125 : WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+#endif
+    return impl_->code;
+}
+void Process::terminate() {
+    if (!impl_) return;
+    close_input();
+#if defined(_WIN32)
+    if (impl_->job) { CloseHandle(impl_->job); impl_->job = nullptr; }
+    if (impl_->process) { if (!poll()) TerminateProcess(impl_->process, 125); WaitForSingleObject(impl_->process, 5000); CloseHandle(impl_->process); impl_->process = nullptr; }
+    if (impl_->output) { CloseHandle(impl_->output); impl_->output = nullptr; }
+#elif !defined(__EMSCRIPTEN__)
+    if (impl_->process > 0) {
+        // The process group also owns descendants after the direct child exits.
+        kill(-impl_->process, SIGTERM);
+        for (int attempt = 0; attempt < 20 && !poll(); ++attempt) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        kill(-impl_->process, SIGKILL);
+        if (!impl_->code) { int status {}; while (waitpid(impl_->process, &status, 0) < 0 && errno == EINTR) {} }
+        impl_->process = -1;
+    }
+    if (impl_->output >= 0) { close(impl_->output); impl_->output = -1; }
+#endif
+}
+std::string path_to_utf8(const std::filesystem::path& path) {
+    const auto value = path.generic_u8string();
+    return {reinterpret_cast<const char*>(value.data()), value.size()};
+}
+bool same_path_spelling(const std::filesystem::path& left, const std::filesystem::path& right) {
+    const auto a = left.lexically_normal(), b = right.lexically_normal();
+#if defined(_WIN32)
+    if (a.native().size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) || b.native().size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return false;
+    return CompareStringOrdinal(a.c_str(), static_cast<int>(a.native().size()), b.c_str(), static_cast<int>(b.native().size()), TRUE) == CSTR_EQUAL;
+#else
+    return a == b;
+#endif
+}
+std::string read_file(const std::filesystem::path& path, std::size_t limit) {
+    std::ifstream input(path, std::ios::binary); if (!input) throw std::runtime_error("Could not open the file");
+    std::string result; std::array<char, 16384> buffer;
+    while (input) { input.read(buffer.data(), buffer.size()); result.append(buffer.data(), input.gcount()); if (result.size() > limit) throw std::runtime_error("File exceeds the editing limit"); }
+    if (!input.eof()) throw std::runtime_error("Could not read the file"); return result;
+}
+namespace {
+void write_temporary_file(const std::filesystem::path& path, std::string_view data, bool& created) {
+#if defined(_WIN32)
+    struct Output {
+        HANDLE handle {INVALID_HANDLE_VALUE};
+        ~Output() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+    } output {CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr)};
+    if (output.handle == INVALID_HANDLE_VALUE) throw std::runtime_error("Could not create the temporary file");
+    created = true;
+    while (!data.empty()) {
+        DWORD written {};
+        const auto count = static_cast<DWORD>(std::min<std::size_t>(data.size(), 1024 * 1024));
+        if (!WriteFile(output.handle, data.data(), count, &written, nullptr) || !written) throw std::runtime_error("Could not write the file");
+        data.remove_prefix(written);
+    }
+    if (!FlushFileBuffers(output.handle)) throw std::runtime_error("Could not flush the file");
+    if (!CloseHandle(std::exchange(output.handle, INVALID_HANDLE_VALUE))) throw std::runtime_error("Could not close the file");
+#elif !defined(__EMSCRIPTEN__)
+    struct Output {
+        int descriptor {-1};
+        ~Output() { if (descriptor >= 0) close(descriptor); }
+    } output {open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)};
+    if (output.descriptor < 0) throw std::runtime_error("Could not create the temporary file");
+    created = true;
+    while (!data.empty()) {
+        const auto written = ::write(output.descriptor, data.data(), std::min<std::size_t>(data.size(), 1024 * 1024));
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) throw std::runtime_error("Could not write the file");
+        data.remove_prefix(static_cast<std::size_t>(written));
+    }
+    while (fsync(output.descriptor)) { if (errno != EINTR) throw std::runtime_error("Could not flush the file"); }
+    if (close(std::exchange(output.descriptor, -1))) throw std::runtime_error("Could not close the file");
+#else
+    std::ofstream output(path, std::ios::binary | std::ios::out | std::ios::noreplace);
+    if (!output) throw std::runtime_error("Could not create the temporary file");
+    created = true;
+    output.write(data.data(), static_cast<std::streamsize>(data.size())); output.flush();
+    if (!output) throw std::runtime_error("Could not write the file");
+    output.close(); if (!output) throw std::runtime_error("Could not close the file");
+#endif
+}
+}
+FileReadOnlyError::FileReadOnlyError() : std::runtime_error("The file is read-only; change its permissions before saving") {}
+void write_file_atomic(const std::filesystem::path& path, std::string_view data) {
+    std::error_code inspection;
+    const auto state = std::filesystem::symlink_status(path, inspection);
+    if (inspection && inspection != std::errc::no_such_file_or_directory) throw std::runtime_error("Could not inspect the destination file");
+    const auto exists = std::filesystem::exists(state);
+    if (exists) {
+        if (!std::filesystem::is_regular_file(state)) throw std::runtime_error("The destination must be a regular file");
+        const auto writable = std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write;
+        if ((state.permissions() & writable) == std::filesystem::perms::none) throw FileReadOnlyError();
+#if defined(_WIN32)
+        auto probe = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (probe == INVALID_HANDLE_VALUE) {
+            if (GetLastError() == ERROR_ACCESS_DENIED || GetLastError() == ERROR_WRITE_PROTECT) throw FileReadOnlyError();
+            throw std::runtime_error("Could not open the destination for writing");
+        }
+        CloseHandle(probe);
+#elif !defined(__EMSCRIPTEN__)
+        if (access(path.c_str(), W_OK)) {
+            if (errno == EACCES || errno == EROFS) throw FileReadOnlyError();
+            throw std::runtime_error("Could not access the destination for writing");
+        }
+#endif
+    }
+    auto temporary = path.parent_path() / (".meditor-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(std::random_device{}()) + ".tmp");
+    bool created {};
+    try {
+        write_temporary_file(temporary, data, created);
+        std::error_code error;
+        if (exists) {
+            std::filesystem::permissions(temporary, state.permissions(), error);
+            if (error) throw std::runtime_error("Could not preserve file permissions");
+        }
+#if defined(_WIN32)
+        if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Could not replace the file");
+#else
+        std::filesystem::rename(temporary, path, error); if (error) throw std::runtime_error("Could not replace the file");
+#endif
+    } catch (...) { if (created) { std::error_code ignored; std::filesystem::remove(temporary, ignored); } throw; }
+}
+std::filesystem::path executable_directory() {
+#if defined(_WIN32)
+    std::wstring path(32768, L'\0'); auto count = GetModuleFileNameW(nullptr, path.data(), path.size()); if (count && count < path.size()) return std::filesystem::path(path.substr(0, count)).parent_path();
+#elif defined(__linux__)
+    if (const char* bundle = std::getenv("MCPP_BUNDLE_DIR")) {
+        std::error_code ignored; const std::filesystem::path binary = std::filesystem::path(bundle) / "bin";
+        if (std::filesystem::is_directory(binary, ignored)) return binary;
+    }
+    std::error_code error; auto path = std::filesystem::read_symlink("/proc/self/exe", error); if (!error) return path.parent_path();
+#elif defined(__APPLE__)
+    std::uint32_t size {}; _NSGetExecutablePath(nullptr, &size); std::string path(size, '\0'); if (!_NSGetExecutablePath(path.data(), &size)) return std::filesystem::weakly_canonical(path.c_str()).parent_path();
+#endif
+    return {};
+}
+namespace {
+#if defined(_WIN32)
+std::filesystem::path environment_directory(const wchar_t* name) {
+    const auto size = GetEnvironmentVariableW(name, nullptr, 0);
+    if (!size) return {};
+    std::wstring value(size, L'\0');
+    const auto count = GetEnvironmentVariableW(name, value.data(), size);
+    if (!count || count >= size) return {};
+    value.resize(count); std::filesystem::path path(value);
+    return path.is_absolute() ? path : std::filesystem::path{};
+}
+#elif !defined(__EMSCRIPTEN__)
+std::filesystem::path environment_directory(const char* name) {
+    const auto* value = std::getenv(name);
+    if (!value || !*value) return {};
+    const auto path = std::filesystem::u8path(value);
+    return path.is_absolute() ? path : std::filesystem::path{};
+}
+#endif
+}
+std::filesystem::path user_config_directory() {
+#if defined(_WIN32)
+    auto base = environment_directory(L"APPDATA");
+    if (base.empty()) { base = environment_directory(L"USERPROFILE"); if (!base.empty()) base /= "AppData/Roaming"; }
+#elif defined(__EMSCRIPTEN__)
+    std::filesystem::path base;
+#elif defined(__APPLE__)
+    auto base = environment_directory("HOME"); if (!base.empty()) base /= "Library/Application Support";
+#else
+    auto base = environment_directory("XDG_CONFIG_HOME");
+    if (base.empty()) { base = environment_directory("HOME"); if (!base.empty()) base /= ".config"; }
+#endif
+    return base;
+}
+std::filesystem::path user_cache_directory() {
+#if defined(_WIN32)
+    auto base = environment_directory(L"LOCALAPPDATA");
+    if (base.empty()) { base = environment_directory(L"USERPROFILE"); if (!base.empty()) base /= "AppData/Local"; }
+#elif defined(__EMSCRIPTEN__)
+    std::filesystem::path base;
+#elif defined(__APPLE__)
+    auto base = environment_directory("HOME"); if (!base.empty()) base /= "Library/Caches";
+#else
+    auto base = environment_directory("XDG_CACHE_HOME");
+    if (base.empty()) { base = environment_directory("HOME"); if (!base.empty()) base /= ".cache"; }
+#endif
+    return base;
+}
+std::string system_language_tag() {
+#if defined(_WIN32)
+    wchar_t name[LOCALE_NAME_MAX_LENGTH] {};
+    if (GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH)) {
+        std::string result;
+        for (const auto ch : name) { if (!ch) break; if (ch > 127) return "en"; result += static_cast<char>(ch); }
+        return result;
+    }
+#else
+    for (const auto* variable : {"LC_ALL", "LC_MESSAGES", "LANG"})
+        if (const auto* value = std::getenv(variable); value && *value) return value;
+#endif
+    return "en";
+}
+std::string redact(std::string text, const std::filesystem::path& workspace) {
+    auto replace = [&](std::string_view source, std::string_view target) {
+        if (source.size() < 3) return;
+        for (std::size_t at = 0; (at = text.find(source, at)) != std::string::npos; at += target.size()) text.replace(at, source.size(), target);
+    };
+    if (!workspace.empty()) {
+        const auto native = workspace.u8string();
+        replace(std::string_view(reinterpret_cast<const char*>(native.data()), native.size()), "<workspace>");
+        replace(path_to_utf8(workspace), "<workspace>");
+    }
+    for (const char* variable : {"HOME", "USERPROFILE", "TMPDIR"}) if (auto value = std::getenv(variable)) replace(value, variable == std::string_view("TMPDIR") ? "<temp>" : "<home>");
+    for (const char* variable : {"USER", "USERNAME", "HOSTNAME", "COMPUTERNAME"}) if (auto value = std::getenv(variable)) replace(value, "<identity>");
+    text = std::regex_replace(text, std::regex(R"((https?://)[^/\s:@]+:[^/\s@]+@)"), "$1<credentials>@");
+    text = std::regex_replace(text, std::regex(R"((token|password|secret|api_key|access_token)=([^\s&]+))", std::regex::icase), "$1=<redacted>");
+    text = std::regex_replace(text, std::regex(R"(([A-Za-z]:[\\/]|/(?:home|Users|tmp|var|opt|private|usr)/)[^\s\"<>]*)"), "<path>");
+    return text;
+}
+
+namespace {
+#if !defined(__EMSCRIPTEN__)
+struct SocketLibrary {
+#if defined(_WIN32)
+    bool ready {};
+    SocketLibrary() { WSADATA data; ready = WSAStartup(MAKEWORD(2, 2), &data) == 0; }
+    ~SocketLibrary() { if (ready) WSACleanup(); }
+#endif
+};
+SocketLibrary& socket_library() { static SocketLibrary library; return library; }
+int wait_readable(int descriptor, std::chrono::milliseconds timeout, const std::stop_token& stop, bool& expired) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+        if (stop.stop_requested()) return 0;
+#if defined(_WIN32)
+        fd_set set; FD_ZERO(&set); FD_SET(descriptor, &set);
+        TIMEVAL slice {0, 500'000};
+        const int ready = select(0, &set, nullptr, nullptr, &slice);
+        if (ready == SOCKET_ERROR) return -1;
+        if (ready > 0) return 1;
+#else
+        pollfd slice {descriptor, POLLIN, 0};
+        const int ready = ::poll(&slice, 1, 50);
+        if (ready < 0) return -1;
+        if (ready > 0 && (slice.revents & (POLLIN | POLLHUP | POLLERR))) return 1;
+#endif
+        if (std::chrono::steady_clock::now() >= deadline) { expired = true; return 0; }
+    }
+}
+void close_socket(int descriptor) {
+    if (descriptor < 0) return;
+#if defined(_WIN32)
+    closesocket(descriptor);
+#else
+    ::close(descriptor);
+#endif
+}
+#endif
+}
+struct Channel::Impl {
+#if !defined(__EMSCRIPTEN__)
+    int descriptor {-1};
+    std::string pending;
+    bool closed {};
+    ~Impl() { close_socket(descriptor); }
+#endif
+};
+Channel::Channel() : impl_(std::make_unique<Impl>()) {}
+Channel::~Channel() { close(); }
+Channel::Channel(Channel&&) noexcept = default;
+Channel& Channel::operator=(Channel&&) noexcept = default;
+bool Channel::write_line(std::string_view data, std::chrono::milliseconds timeout, std::stop_token stop) {
+#if defined(__EMSCRIPTEN__)
+    (void)data; (void)timeout; (void)stop; throw std::runtime_error("Channels require a native platform adapter");
+#else
+    if (impl_->closed || impl_->descriptor < 0) return false;
+    std::string frame(data);
+    frame += '\n';
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::size_t written = 0;
+    while (written < frame.size()) {
+        if (stop.stop_requested() || std::chrono::steady_clock::now() >= deadline) return false;
+#if defined(_WIN32)
+        const int sent = ::send(impl_->descriptor, frame.data() + written, static_cast<int>(frame.size() - written), 0);
+        if (sent == SOCKET_ERROR) { impl_->closed = true; return false; }
+        written += static_cast<std::size_t>(sent);
+#else
+        const ssize_t sent = ::send(impl_->descriptor, frame.data() + written, frame.size() - written, MSG_NOSIGNAL);
+        if (sent < 0) {
+            if (errno == EINTR) continue;
+            impl_->closed = true; return false;
+        }
+        written += static_cast<std::size_t>(sent);
+#endif
+    }
+    return true;
+#endif
+}
+std::optional<std::string> Channel::read_line(std::chrono::milliseconds timeout, std::stop_token stop) {
+#if defined(__EMSCRIPTEN__)
+    (void)timeout; (void)stop; throw std::runtime_error("Channels require a native platform adapter");
+#else
+    if (impl_->closed) return std::nullopt;
+    for (;;) {
+        if (const auto newline = impl_->pending.find('\n'); newline != std::string::npos) {
+            std::string line = impl_->pending.substr(0, newline);
+            impl_->pending.erase(0, newline + 1);
+            return line;
+        }
+        bool expired {};
+        const int ready = wait_readable(impl_->descriptor, timeout, stop, expired);
+        if (ready < 0) { impl_->closed = true; return std::nullopt; }
+        if (expired || stop.stop_requested()) return std::nullopt;
+        if (ready == 0) continue;
+        char buffer[4096];
+#if defined(_WIN32)
+        const int received = ::recv(impl_->descriptor, buffer, sizeof(buffer), 0);
+        if (received == SOCKET_ERROR || received == 0) { impl_->closed = true; return std::nullopt; }
+        impl_->pending.append(buffer, static_cast<std::size_t>(received));
+#else
+        const ssize_t received = ::recv(impl_->descriptor, buffer, sizeof(buffer), 0);
+        if (received == 0) { impl_->closed = true; return std::nullopt; }
+        if (received < 0) { if (errno == EINTR) continue; impl_->closed = true; return std::nullopt; }
+        impl_->pending.append(buffer, static_cast<std::size_t>(received));
+#endif
+        if (impl_->pending.size() > 16 * 1024 * 1024) { impl_->closed = true; return std::nullopt; }
+    }
+#endif
+}
+bool Channel::ended() const {
+#if defined(__EMSCRIPTEN__)
+    return true;
+#else
+    return impl_->closed || impl_->descriptor < 0;
+#endif
+}
+void Channel::adopt(int descriptor) {
+#if !defined(__EMSCRIPTEN__)
+    impl_->descriptor = descriptor;
+#else
+    (void)descriptor;
+#endif
+}
+void Channel::close() {
+#if !defined(__EMSCRIPTEN__)
+    if (impl_ && !impl_->closed) {
+        close_socket(impl_->descriptor);
+        impl_->descriptor = -1;
+        impl_->closed = true;
+    }
+#endif
+}
+struct ChannelListener::Impl {
+#if !defined(__EMSCRIPTEN__)
+    int descriptor {-1};
+    std::filesystem::path socket_path;
+    ~Impl() {
+        if (descriptor >= 0) close_socket(descriptor);
+        if (!socket_path.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove(socket_path, ignored);
+        }
+    }
+#endif
+};
+ChannelListener::ChannelListener(const std::string& address) : impl_(std::make_unique<Impl>()) {
+#if defined(__EMSCRIPTEN__)
+    (void)address; throw std::runtime_error("Channels require a native platform adapter");
+#else
+    socket_library();
+    impl_->descriptor = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (impl_->descriptor < 0) throw std::runtime_error("Could not create the local channel socket");
+    sockaddr_un local {};
+    local.sun_family = AF_UNIX;
+    if (address.size() >= sizeof(local.sun_path)) { close_socket(impl_->descriptor); impl_->descriptor = -1; throw std::runtime_error("Local channel address is too long"); }
+    std::memcpy(local.sun_path, address.c_str(), address.size() + 1);
+    auto serving = [&] {
+        close_socket(impl_->descriptor); impl_->descriptor = -1;
+        throw std::runtime_error("Local channel address is already serving");
+    };
+    auto bind_or_steal = [&] { return ::bind(impl_->descriptor, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) == 0; };
+    if (bind_or_steal()) {
+        if (::listen(impl_->descriptor, 4) != 0) serving();
+    } else {
+        // Only steal the address when nothing answers there; a live server keeps it.
+        const int probe = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (probe >= 0) {
+            const bool answered = ::connect(probe, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) == 0;
+            close_socket(probe);
+            if (answered) serving();
+        }
+        std::error_code ignored;
+        std::filesystem::remove(address, ignored);
+        impl_->descriptor = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (impl_->descriptor < 0 || !bind_or_steal() || ::listen(impl_->descriptor, 4) != 0) serving();
+    }
+    impl_->socket_path = std::filesystem::u8path(address);
+#endif
+}
+ChannelListener::~ChannelListener() = default;
+std::unique_ptr<Channel> ChannelListener::accept(std::chrono::milliseconds timeout, std::stop_token stop) {
+#if defined(__EMSCRIPTEN__)
+    (void)timeout; (void)stop; throw std::runtime_error("Channels require a native platform adapter");
+#else
+    if (impl_->descriptor < 0) throw std::runtime_error("Local channel listener is closed");
+    bool expired {};
+    const int ready = wait_readable(impl_->descriptor, timeout, stop, expired);
+    if (ready <= 0) return nullptr;
+    const int connection = ::accept(impl_->descriptor, nullptr, nullptr);
+    if (connection < 0) throw std::runtime_error("Could not accept a local channel connection");
+    auto channel = std::make_unique<Channel>();
+    channel->adopt(connection);
+    return channel;
+#endif
+}
+std::unique_ptr<Channel> open_channel(const std::string& address, std::chrono::milliseconds timeout) {
+#if defined(__EMSCRIPTEN__)
+    (void)address; (void)timeout; throw std::runtime_error("Channels require a native platform adapter");
+#else
+    socket_library();
+    const int descriptor = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (descriptor < 0) return nullptr;
+    sockaddr_un local {};
+    local.sun_family = AF_UNIX;
+    if (address.size() >= sizeof(local.sun_path)) { close_socket(descriptor); return nullptr; }
+    std::memcpy(local.sun_path, address.c_str(), address.size() + 1);
+#if defined(_WIN32)
+    u_long unblocking = 1;
+    ioctlsocket(descriptor, FIONBIO, &unblocking);
+    const int result = ::connect(descriptor, reinterpret_cast<const sockaddr*>(&local), sizeof(local));
+    if (result == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
+        fd_set set; FD_ZERO(&set); FD_SET(descriptor, &set);
+        TIMEVAL slice {static_cast<long>(timeout.count() / 1000), static_cast<long>((timeout.count() % 1000) * 1000)};
+        if (::select(0, nullptr, &set, nullptr, &slice) <= 0) { close_socket(descriptor); return nullptr; }
+    } else if (result == SOCKET_ERROR) { close_socket(descriptor); return nullptr; }
+    u_long blocking = 0;
+    ioctlsocket(descriptor, FIONBIO, &blocking);
+#else
+    (void)timeout;
+    if (::connect(descriptor, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) != 0) { close_socket(descriptor); return nullptr; }
+#endif
+    auto channel = std::make_unique<Channel>();
+    channel->adopt(descriptor);
+    return channel;
+#endif
+}
+std::string local_channel_address(std::string_view key) {
+    std::string safe;
+    for (const char character : key)
+        safe += (std::isalnum(static_cast<unsigned char>(character)) || character == '-') ? character : '-';
+    const auto base = std::filesystem::temp_directory_path() / ("meditor-channel-" + safe + ".sock");
+    return path_to_utf8(base);
+}
+}

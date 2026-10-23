@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MEDITOR_SOURCE_COMMIT: ${{ github.sha }}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-sources:
+    name: Public sources and documentation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python scripts/check_repository.py
+      - run: python scripts/check_licenses.py
+      - run: python scripts/check_localization.py
+      - run: git diff --check
+      - run: python scripts/check_acceptance.py
+      - run: python -m unittest discover -s scripts/tests -v
+
+  native-core:
+    name: Native core, CLI and GUI (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            payload: x86_64-linux-gnu
+          - os: windows-2022
+            payload: x86_64-windows-msvc
+          - os: macos-15
+            payload: aarch64-macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Restore build tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.mcpp/registry
+            ~/.mcpp/git
+            ~/.cache/meditor/mcpp
+            ~/Library/Caches/meditor/mcpp
+            ~/AppData/Local/meditor/mcpp
+          key: meditor-managed-homes-v2-${{ runner.os }}-${{ runner.arch }}-mcpp-2026.10.21.1-${{ hashFiles('**/mcpp.toml', 'mcpp.lock') }}
+          restore-keys: meditor-managed-homes-v2-${{ runner.os }}-${{ runner.arch }}-mcpp-2026.10.21.1-
+      - name: Install verified compiler driver
+        run: python scripts/setup_tools.py --directory "${{ runner.temp }}/meditor-tools"
+      - name: Prepare complete verified upstream tool payloads
+        run: python scripts/prepare_payloads.py --target ${{ matrix.payload }}
+      - name: Build native CLI and fixture tool
+        run: mcpp build --features test-support
+      - name: Test document, platform and delivery packages
+        run: mcpp test -p meditor-document -p meditor-platform -p meditor-application -p meditor-distribution
+      - name: Build a standalone public document consumer
+        working-directory: mcpp/test-consumers/document
+        run: mcpp run
+      - name: Consume packed public document and syntax interfaces
+        run: python scripts/test_document_package.py
+      - name: Exercise document and tool protocols through meditor
+        run: python scripts/run_cli_tests.py
+      - name: Exercise the bundled mcpp and mcppls through meditor
+        run: python scripts/run_cli_tests.py --native-tools
+      - name: Exercise headless input, layout and animation contracts
+        run: mcpp test -p meditor
+      - name: Install Linux desktop test utilities
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb x11-utils libxtst6 imagemagick
+      - name: Exercise native GUI editing and saving
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a python scripts/test_gui_linux.py --positional --screenshot target/evidence/linux-workbench-file.png
+          xvfb-run -a python scripts/test_gui_linux.py --language en --screenshot target/evidence/linux-workbench-en.png
+          xvfb-run -a python scripts/test_gui_linux.py --language zh --screenshot target/evidence/linux-workbench-zh.png
+          xvfb-run -a python scripts/test_gui_linux.py --syntax markdown --theme light --screenshot target/evidence/linux-workbench-markdown.png
+          xvfb-run -a python scripts/test_gui_linux.py --syntax json --language zh --screenshot target/evidence/linux-workbench-json.png
+          xvfb-run -a python scripts/test_gui_linux.py --syntax toml --theme light --screenshot target/evidence/linux-workbench-toml.png
+          xvfb-run -a python scripts/test_gui_linux.py --bom --crlf --screenshot target/evidence/linux-workbench-crlf.png
+          xvfb-run -a python scripts/test_gui_linux.py --find --bom --crlf --readonly --screenshot target/evidence/linux-workbench-search.png
+      - name: Retain the synthetic workspace screenshot
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-workbench
+          path: target/evidence/linux-workbench*.png
+          if-no-files-found: warn
+
+  android-native:
+    name: Android native compilation (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-linux-android, x86_64-linux-android]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.mcpp/registry
+            ~/.mcpp/git
+          key: meditor-android-${{ matrix.target }}-mcpp-2026.10.21.1-${{ hashFiles('**/mcpp.toml', 'mcpp.lock') }}
+          restore-keys: meditor-android-${{ matrix.target }}-mcpp-2026.10.21.1-
+      - name: Install verified compiler driver
+        run: python scripts/setup_tools.py --directory "${{ runner.temp }}/meditor-tools"
+      - name: Compile the editor and its Modules dependencies with NDK
+        run: mcpp build -p meditor --target ${{ matrix.target }}

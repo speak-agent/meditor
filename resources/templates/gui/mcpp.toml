@@ -1,0 +1,8 @@
+[package]
+name        = "{{name}}"
+version     = "0.1.0"
+description = "Created by meditor from the GUI template (meditor templates v1)"
+standard = "c++23"
+
+[dependencies]
+huxerui.huxerui = { git = "https://github.com/Sunrisepeak/HuxerUI.git", branch = "meditor" }

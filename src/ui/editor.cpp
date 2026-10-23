@@ -1,0 +1,760 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Sunrisepeak & mcpp-community
+module meditor.ui.editor;
+import std;
+import huxerui;
+import meditor.shortcuts;
+import meditor.application;
+import meditor.document;
+import meditor.syntax;
+
+namespace meditor::ui {
+using namespace huxerui;
+namespace {
+std::size_t byte_at(const std::string& text, TextOffset offset) {
+    if (offset < 0) throw std::runtime_error("Invalid text offset");
+    TextOffset unit {};
+    for (std::size_t i = 0;;) {
+        if (unit == offset) return i;
+        if (i >= text.size()) break;
+        auto ch = static_cast<unsigned char>(text[i]);
+        auto count = ch < 0x80 ? 1 : ch < 0xe0 ? 2 : ch < 0xf0 ? 3 : 4;
+        unit += count == 4 ? 2 : 1; i += count;
+    }
+    throw std::runtime_error("Invalid UTF-16 boundary");
+}
+TextOffset units(std::string_view text) { TextOffset count {}; for (unsigned char ch : text) if ((ch & 0xc0) != 0x80) count += ch >= 0xf0 ? 2 : 1; return count; }
+void normalize_value(TextEditingValue& value, std::optional<std::vector<LineEnding>>& endings, LineEnding preferred) {
+    if (!endings || value.text.find('\r') == std::string::npos) return;
+    std::vector<TextOffset> removed; std::vector<LineEnding> normalizedEndings; TextOffset offset {}; std::size_t line {};
+    for (std::size_t i = 0; i < value.text.size(); ++i) {
+        const auto c = static_cast<unsigned char>(value.text[i]);
+        if (c == '\r') {
+            if (i + 1 < value.text.size() && value.text[i + 1] == '\n') removed.push_back(offset);
+            else { value.text[i] = '\n'; normalizedEndings.push_back(preferred); }
+        } else if (c == '\n') normalizedEndings.push_back(endings->at(line++));
+        if ((c & 0xc0) != 0x80) offset += c >= 0xf0 ? 2 : 1;
+    }
+    if (line != endings->size()) throw std::runtime_error("Invalid newline metadata");
+    *endings = std::move(normalizedEndings);
+    auto map = [&](TextOffset position) { return position - static_cast<TextOffset>(std::lower_bound(removed.begin(), removed.end(), position) - removed.begin()); };
+    value.selection = {map(value.selection.anchor), map(value.selection.active)};
+    if (value.composition) value.composition = TextRange{map(value.composition->start), map(value.composition->end)};
+    value.text = normalize_line_endings(value.text, LineEnding::Lf);
+}
+struct Line { std::size_t byte {}; TextOffset unit {}; std::string text; };
+}
+struct EditorState::Impl : TextInputClient, TextSelectionClient {
+    std::shared_ptr<Application> application;
+    std::string document;
+    std::function<void()> changed;
+    TextEditingValue value;
+    TextPresentation presentation;
+    TextFormat format;
+    struct Baseline { TextEditingValue value; std::vector<LineEnding> endings; bool bom {}; };
+    std::optional<Baseline> baseline;
+    std::uint64_t documentRevision {};
+    std::string documentPath;
+    std::uint64_t compositionSequence {};
+    std::string compositionGroup;
+    std::string compositionPrefix {"ime-" + std::to_string(std::random_device{}()) + "-"};
+    TextInputState input;
+    std::vector<Line> lines;
+    std::vector<std::vector<std::pair<TextOffset, float>>> positions;
+    Size viewport;
+    float lineHeight {24}, ascent {18};
+    std::size_t topLine {};
+    bool dark {true};
+    syntax::Language language {syntax::Language::Plain};
+    syntax::Cache syntaxCache;
+    std::vector<TextRange> searchMatches;
+    struct CompletionEntry { std::string label, insert; };
+    std::vector<CompletionEntry> completions;
+    std::vector<std::size_t> completionMatches;
+    std::size_t completionSelected {};
+    bool completionActive {};
+    std::uint64_t completionDesired {};
+    TextOffset completionPrefixStart {};
+    std::string completionPrefix;
+    // Hover and signature help follow the completion desire-sequence protocol:
+    // the editor bumps a counter and the workbench serves the newest desire.
+    std::string hoverText;
+    bool hoverActive {};
+    std::uint64_t hoverDesired {};
+    Point hoverPoint {};
+    Position hoverPosition {};
+    std::function<void()> hoverRequested;
+    void dismiss_hover_() { if (hoverActive || !hoverText.empty()) { hoverActive = false; hoverText.clear(); if (changed) changed(); } }
+    void request_hover_(Point point, TextOffset offset) {
+        hoverActive = false; hoverText.clear();
+        try { hoverPosition = utf8_position_at(presentation.raw_text(), presentation.raw_offset(byte_at(value.text, offset))); }
+        catch (...) { return; }
+        hoverPoint = point; ++hoverDesired;
+        if (hoverRequested) hoverRequested();
+    }
+    std::string signatureLabel;
+    std::size_t signatureActiveParameter {};
+    bool signatureActive {};
+    std::uint64_t signatureDesired {};
+    void dismiss_signature_() { if (signatureActive || !signatureLabel.empty()) { signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0; if (changed) changed(); } }
+    // Runs BEFORE publish_ alongside schedule_completion_: the changed() chain
+    // Semantic overlay: LSP tokens (UTF-16, line-local) layered over syntax colors.
+    struct SemanticSpan { std::size_t line; TextOffset start, end; std::size_t type; };
+    std::vector<SemanticSpan> semanticSpans;
+    std::uint64_t semanticDesired {1}; // the first view already wants tokens
+    static Color semantic_color_(std::size_t type, bool dark) {
+        switch (type) { // Common LSP legend prefixes; unknown indices fall through to the variable tone.
+        case 0: return dark ? Color::Rgb(197, 157, 255) : Color::Rgb(112, 48, 160); // keyword
+        case 2: return dark ? Color::Rgb(127, 188, 240) : Color::Rgb(33, 98, 161); // function
+        case 3: return dark ? Color::Rgb(112, 214, 202) : Color::Rgb(18, 110, 102); // type
+        case 4: return dark ? Color::Rgb(151, 210, 188) : Color::Rgb(26, 112, 91); // number/property
+        case 5: return dark ? Color::Rgb(226, 176, 139) : Color::Rgb(151, 64, 29); // macro
+        default: return dark ? Color::Rgb(233, 238, 247) : Color::Rgb(48, 60, 78); // variable
+        }
+    }
+    void schedule_signature_() { signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0; ++signatureDesired; }
+    Rect completionBox_() const {
+        auto [row, x] = location_(value.selection.active);
+        const auto width = [&] {
+            float widest = 120.0F;
+            for (auto index : completionMatches) {
+                auto size = completions[index].label.size();
+                widest = std::max(widest, 40.0F + static_cast<float>(size) * 8.4F);
+            }
+            return std::min(widest, std::max(120.0F, viewport.width - 80.0F));
+        }();
+        const auto count = std::min<std::size_t>(completionMatches.size(), 8);
+        const auto top = 10.0F + (static_cast<float>(row) - topLine + 1) * lineHeight;
+        return {64.0F + x, std::min(top, std::max(10.0F, viewport.height - count * 20.0F - 12.0F)), width, static_cast<float>(count) * 20.0F + 8.0F};
+    }
+    bool completionShown() const { return completionActive && !completionMatches.empty(); }
+    void dismiss_completion_() { if (completionActive || !completionMatches.empty()) { completionActive = false; completionMatches.clear(); completionSelected = 0; if (changed) changed(); } }
+    void refilter_completions_() {
+        completionMatches.clear(); completionSelected = 0;
+        for (std::size_t index = 0; index < completions.size(); ++index)
+            if (completions[index].label.starts_with(completionPrefix)) completionMatches.push_back(index);
+        completionActive = !completionMatches.empty();
+    }
+    void accept_completion_() {
+        if (!completionShown() || completionSelected >= completionMatches.size()) { dismiss_completion_(); return; }
+        const auto entry = completions[completionMatches[completionSelected]];
+        auto next = value; auto endings = line_endings_();
+        try { replace_(next, {completionPrefixStart, next.selection.active}, entry.insert, endings); }
+        catch (...) { dismiss_completion_(); return; }
+        const auto guard = completionActive;
+        completionActive = false; completionMatches.clear(); completionSelected = 0;
+        publish_(next, "completion", std::move(endings));
+        (void)guard;
+    }
+    // Runs inside ApplyTextInput: publish_ already notified the tree, so this
+    // must not fire changed() re-entrantly.
+    // Runs BEFORE publish_ so the desire is visible when publish_ notifies the tree.
+    void schedule_completion_(const TextEditingValue& source) {
+        completionActive = false; completionMatches.clear(); completionSelected = 0;
+        const auto caretByte = byte_at(source.text, source.selection.active);
+        std::size_t first = caretByte;
+        const auto word = [](unsigned char ch) { return std::isalnum(ch) || ch == '_' || ch >= 0x80; };
+        while (first && word(static_cast<unsigned char>(source.text[first - 1]))) --first;
+        completionPrefixStart = units(std::string_view(source.text).substr(0, first));
+        completionPrefix = source.text.substr(first, caretByte - first);
+        ++completionDesired;
+    }
+    bool revealCaret {true};
+    ViewNode* focusNode {};
+    bool focusWhenMounted {};
+    void rebuild_() {
+        auto oldLines = std::move(lines);
+        auto oldPositions = std::move(positions);
+        lines.clear(); std::size_t byte {}; TextOffset unit {};
+        while (true) {
+            auto end = value.text.find('\n', byte); auto length = end == std::string::npos ? value.text.size() - byte : end - byte;
+            auto content = value.text.substr(byte, length); if (!content.empty() && content.back() == '\r') content.pop_back();
+            lines.push_back({byte, unit, content});
+            if (end == std::string::npos) break;
+            unit += units(std::string_view(value.text).substr(byte, end - byte + 1)); byte = end + 1;
+        }
+        std::vector<std::string_view> sourceLines; sourceLines.reserve(lines.size());
+        for (const auto& line : lines) sourceLines.push_back(line.text);
+        syntaxCache.update(sourceLines, language);
+        positions.resize(lines.size());
+        for (std::size_t i = 0; i < lines.size() && i < oldLines.size(); ++i)
+            if (lines[i].text == oldLines[i].text) positions[i] = std::move(oldPositions[i]);
+    }
+    void refresh_() {
+        auto response = application->execute({{"command", "document.read"}, {"params", {{"document", document}}}});
+        if (!response.value("ok", false)) return;
+        auto data = response.at("data"); auto revision = data.at("revision").get<std::uint64_t>();
+        documentPath = data.at("path").get<std::string>();
+        if (revision == documentRevision) return;
+        language = syntax::detect(data.at("path").get<std::string>());
+        presentation = TextPresentation(data.at("text").get<std::string>());
+        value.text = presentation.text(); format = presentation.format();
+        format.lineEnding = data.at("format").at("lineEnding") == "crlf" ? LineEnding::CrLf : LineEnding::Lf;
+        documentRevision = revision; searchMatches.clear(); completionActive = false; completionMatches.clear(); completions.clear(); completionSelected = 0; hoverActive = false; hoverText.clear(); signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0; semanticSpans.clear(); ++semanticDesired;
+        const auto length = units(value.text);
+        auto clamp = [&](TextOffset offset) {
+            offset = std::clamp<TextOffset>(offset, 0, length);
+            try { byte_at(value.text, offset); } catch (const std::runtime_error&) { --offset; }
+            return offset;
+        };
+        value.selection = {clamp(value.selection.anchor), clamp(value.selection.active)};
+        value.composition.reset(); baseline.reset(); compositionGroup.clear();
+        ++input.revision; ++input.content_revision; rebuild_();
+    }
+    std::vector<LineEnding> line_endings_() const { auto items = presentation.line_endings(); return {items.begin(), items.end()}; }
+    bool publish_(TextEditingValue next, const std::string& historyGroup = {}, std::optional<std::vector<LineEnding>> endings = {}, std::optional<bool> bom = {}) {
+        if (!valid_utf8(next.text)) return false;
+        if (format.loneCarriageReturns) {
+            if (next.text != value.text || next.composition || (endings && !std::ranges::equal(*endings, presentation.line_endings()))) return false;
+        } else normalize_value(next, endings, format.lineEnding);
+        const bool contentChanged = next.text != value.text || (endings && !std::ranges::equal(*endings, presentation.line_endings())) || (bom && *bom != format.utf8Bom);
+        if (contentChanged) {
+            semanticSpans.clear(); ++semanticDesired;
+            if (!endings) return false;
+            auto raw = encode_text_format(next.text, *endings, bom.value_or(format.utf8Bom));
+            const auto& before = presentation.raw_text();
+            std::size_t prefix {}, suffix {};
+            while (prefix < before.size() && prefix < raw.size() && before[prefix] == raw[prefix]) ++prefix;
+            while (prefix && prefix < before.size() && (static_cast<unsigned char>(before[prefix]) & 0xc0) == 0x80) --prefix;
+            while (suffix < before.size() - prefix && suffix < raw.size() - prefix && before[before.size() - suffix - 1] == raw[raw.size() - suffix - 1]) ++suffix;
+            while (suffix && before.size() > suffix && (static_cast<unsigned char>(before[before.size() - suffix]) & 0xc0) == 0x80) --suffix;
+            const auto inserted = raw.substr(prefix, raw.size() - prefix - suffix);
+            TextPresentation prepared(std::move(raw));
+            if (next.text.starts_with("\xef\xbb\xbf") && prepared.text() == next.text.substr(3)) {
+                next.text.erase(0, 3);
+                auto map = [](TextOffset position) { return std::max<TextOffset>(0, position - 1); };
+                next.selection = {map(next.selection.anchor), map(next.selection.active)};
+                if (next.composition) next.composition = TextRange{map(next.composition->start), map(next.composition->end)};
+            }
+            auto reply = application->execute({{"command", "document.edit"}, {"params", {{"document", document}, {"revision", documentRevision}, {"historyGroup", historyGroup}, {"edits", Json::array({{{"start", prefix}, {"end", before.size() - suffix}, {"text", inserted}}})}}}});
+            if (!reply.value("ok", false)) { refresh_(); return false; }
+            documentRevision = reply["data"]["revision"]; searchMatches.clear(); ++input.content_revision;
+            presentation = std::move(prepared); format = presentation.format();
+            format.lineEnding = reply["data"]["format"]["lineEnding"] == "crlf" ? LineEnding::CrLf : LineEnding::Lf;
+        }
+        revealCaret = revealCaret || next.text != value.text || next.selection != value.selection;
+        value = std::move(next); ++input.revision; if (contentChanged) rebuild_();
+        if (changed) changed();
+        return true;
+    }
+    void replace_(TextEditingValue& next, TextRange range, const std::string& text, std::vector<LineEnding>& endings, std::span<const LineEnding> preserved = {}) {
+        auto start = byte_at(next.text, range.start), end = byte_at(next.text, range.end);
+        if (start > end) throw std::runtime_error("Invalid range");
+        const auto first = static_cast<std::size_t>(std::count(next.text.begin(), next.text.begin() + start, '\n'));
+        const auto removed = static_cast<std::size_t>(std::count(next.text.begin() + start, next.text.begin() + end, '\n'));
+        auto inserted = text;
+        for (std::size_t i = 0; i < inserted.size(); ++i) if (inserted[i] == '\r' && (i + 1 == inserted.size() || inserted[i + 1] != '\n')) inserted[i] = '\n';
+        const auto added = static_cast<std::size_t>(std::count(inserted.begin(), inserted.end(), '\n'));
+        endings.erase(endings.begin() + first, endings.begin() + first + removed);
+        if (preserved.empty()) endings.insert(endings.begin() + first, added, format.lineEnding);
+        else {
+            if (preserved.size() != added) throw std::runtime_error("Invalid newline metadata");
+            endings.insert(endings.begin() + first, preserved.begin(), preserved.end());
+        }
+        next.text.replace(start, end - start, inserted); auto caret = range.start + units(inserted); next.selection = {caret, caret};
+    }
+    TextInputConfiguration Configuration() const override { TextInputConfiguration config; config.multiline = true; config.read_only = format.loneCarriageReturns; return config; }
+    TextInputState State() const override { auto result = input; result.selection = value.selection; result.composition = value.composition; return result; }
+    TextInputState BeginTextInput(TextInputSessionId session) override { input.session_id = session; ++input.revision; return State(); }
+    TextInputApplyResult ApplyTextInput(const TextInputCommandBatch& batch) override {
+        if (batch.session_id != input.session_id) return {TextInputResultCode::SessionMismatch};
+        if (batch.commands.empty()) return {TextInputResultCode::Rejected};
+        auto next = value; auto original = baseline; auto endings = line_endings_(); bool bom = format.utf8Bom;
+        try {
+            for (const auto& command : batch.commands) {
+                if (format.loneCarriageReturns && command.kind != TextInputCommandKind::SetSelection) return {TextInputResultCode::Rejected};
+                auto range = command.target.value_or(next.composition.value_or(next.selection.Range()));
+                if (command.coordinate_space == TextInputCoordinateSpace::Composition && command.target) {
+                    if (!next.composition) throw std::runtime_error("Missing composition");
+                    range.start += next.composition->start; range.end += next.composition->start;
+                    if (range.end > next.composition->end) throw std::runtime_error("Composition range exceeded");
+                }
+                switch (command.kind) {
+                case TextInputCommandKind::SetSelection:
+                    if (!command.selection_after) throw std::runtime_error("Missing selection"); next.selection = *command.selection_after; break;
+                case TextInputCommandKind::BeginComposition:
+                    if (next.composition || !command.target) throw std::runtime_error("Invalid composition start");
+                    original = Baseline{next, endings, bom}; next.composition = range; break;
+                case TextInputCommandKind::UpdateComposition: {
+                    if (!original) original = Baseline{next, endings, bom};
+                    auto old = next.composition; replace_(next, range, command.text, endings);
+                    next.composition = old ? TextRange{old->start, old->end + units(command.text) - range.Length()} : TextRange{range.start, range.start + units(command.text)};
+                    break;
+                }
+                case TextInputCommandKind::CommitText:
+                    replace_(next, range, command.text, endings); next.composition.reset(); original.reset(); break;
+                case TextInputCommandKind::FinishComposition: next.composition.reset(); original.reset(); break;
+                case TextInputCommandKind::CancelComposition:
+                    if (original) { next = original->value; endings = original->endings; bom = original->bom; } next.composition.reset(); original.reset(); break;
+                case TextInputCommandKind::DeleteSurrounding: {
+                    if (command.delete_before < 0 || command.delete_after < 0) throw std::runtime_error("Invalid delete");
+                    auto selected = next.selection.Range(); auto a = selected.start, b = selected.end;
+                    if (command.delete_unit == TextInputUnit::UnicodeCodePoint) {
+                        auto left = byte_at(next.text, a), right = byte_at(next.text, b);
+                        for (TextOffset i = 0; i < command.delete_before && left; ++i) { --left; while (left && (static_cast<unsigned char>(next.text[left]) & 0xc0) == 0x80) --left; }
+                        for (TextOffset i = 0; i < command.delete_after && right < next.text.size(); ++i) { ++right; while (right < next.text.size() && (static_cast<unsigned char>(next.text[right]) & 0xc0) == 0x80) ++right; }
+                        a = units(std::string_view(next.text).substr(0, left)); b = units(std::string_view(next.text).substr(0, right));
+                    } else { a = std::max<TextOffset>(0, a - command.delete_before); b = std::min(units(next.text), b + command.delete_after); }
+                    auto selectedText = AttributedText(next.text).TextInRange(selected);
+                    auto firstEnding = static_cast<std::size_t>(std::count(next.text.begin(), next.text.begin() + byte_at(next.text, selected.start), '\n'));
+                    auto count = static_cast<std::size_t>(std::count(selectedText.begin(), selectedText.end(), '\n'));
+                    std::vector<LineEnding> selectedEndings(endings.begin() + firstEnding, endings.begin() + firstEnding + count);
+                    replace_(next, {a, b}, selectedText, endings, selectedEndings); next.selection = {a, a + selected.Length()}; next.composition.reset(); original.reset(); break;
+                }
+                }
+                if (command.selection_after) next.selection = *command.selection_after;
+                byte_at(next.text, next.selection.anchor); byte_at(next.text, next.selection.active);
+                if (next.composition) { byte_at(next.text, next.composition->start); byte_at(next.text, next.composition->end); }
+            }
+            if ((original || baseline) && compositionGroup.empty()) compositionGroup = compositionPrefix + std::to_string(++compositionSequence);
+            const bool committedText = !next.composition && std::any_of(batch.commands.begin(), batch.commands.end(), [](const TextInputCommand& command) { return command.kind == TextInputCommandKind::CommitText; });
+            if (committedText) {
+                schedule_completion_(next);
+                const auto caretByte = byte_at(next.text, next.selection.active);
+                const auto trigger = caretByte ? next.text[caretByte - 1] : '\0';
+                if (trigger == '(' || trigger == ',') schedule_signature_();
+                if (trigger == ')') { signatureActive = false; signatureLabel.clear(); signatureActiveParameter = 0; } // publish_ notifies the tree below
+            }
+            if (!publish_(next, compositionGroup, std::move(endings), bom)) return {TextInputResultCode::Rejected};
+            baseline = original;
+            if (!next.composition) compositionGroup.clear();
+            return {TextInputResultCode::Ok};
+        } catch (...) { return {TextInputResultCode::Rejected}; }
+    }
+    TextInputContext QueryTextInputContext(TextInputSessionId session, TextOffset start, TextOffset length) const override {
+        if (session != input.session_id) return {.result_code = TextInputResultCode::SessionMismatch, .session_id = session};
+        try {
+            if (start < 0 || length < 0) return {.session_id = session};
+            auto total = units(value.text); if (start > total) return {.session_id = session};
+            auto end = start + std::min(total - start, length);
+            auto a = byte_at(value.text, start), b = byte_at(value.text, end);
+            return {TextInputResultCode::Ok, session, start, total, value.text.substr(a, b - a), value.selection, value.composition};
+        } catch (...) { return {.session_id = session}; }
+    }
+    std::pair<std::size_t, float> location_(TextOffset unit) const {
+        std::size_t row {};
+        while (row + 1 < lines.size() && lines[row + 1].unit <= unit) ++row;
+        float x {};
+        for (auto [offset, position] : positions[row]) { if (offset > unit - lines[row].unit) break; x = position; }
+        return {row, x};
+    }
+    TextInputGeometry QueryTextInputGeometry(TextInputSessionId session, TextRange range) const override {
+        if (session != input.session_id) return {.result_code = TextInputResultCode::SessionMismatch, .session_id = session};
+        auto [row, x] = location_(range.end);
+        TextInputGeometry result {TextInputResultCode::Ok, session, {64 + x, 10 + (static_cast<float>(row) - topLine) * lineHeight, 1.5F, lineHeight}, {}};
+        if (range.start != range.end) {
+            auto [first, firstX] = location_(range.start);
+            for (auto line = first; line <= row; ++line) result.range_rects.push_back({64 + (line == first ? firstX : 0), 10 + (static_cast<float>(line) - topLine) * lineHeight, std::max(1.0F, (line == row ? x : viewport.width - 70) - (line == first ? firstX : 0)), lineHeight});
+        }
+        return result;
+    }
+    TextInputPositionResult QueryTextInputPosition(TextInputSessionId session, Point point) const override {
+        if (session != input.session_id) return {.result_code = TextInputResultCode::SessionMismatch, .session_id = session};
+        auto row = std::min(lines.size() - 1, topLine + static_cast<std::size_t>(std::max(0.0F, std::floor((point.y - 10) / lineHeight))));
+        TextOffset column {}; float best = std::numeric_limits<float>::infinity();
+        for (auto [offset, x] : positions[row]) { auto distance = std::abs(x - (point.x - 64)); if (distance < best) { best = distance; column = offset; } }
+        return {TextInputResultCode::Ok, session, {lines[row].unit + column}};
+    }
+    TextInputKeyResult HandleTextKey(const KeyEvent& event) override {
+        if (event.type != KeyEventType::Down) return TextInputKeyResult::Unhandled;
+        if (value.composition) return TextInputKeyResult::Unhandled;
+        if (event.key == Key::Escape && (signatureActive || hoverActive)) { dismiss_signature_(); dismiss_hover_(); return TextInputKeyResult::Handled; }
+        if (completionShown()) {
+            if (event.key == Key::ArrowUp || event.key == Key::ArrowDown) {
+                completionSelected = (completionSelected + (event.key == Key::ArrowDown ? 1 : completionMatches.size() - 1)) % completionMatches.size();
+                if (changed) changed();
+                return TextInputKeyResult::Handled;
+            }
+            if (event.key == Key::Enter || event.key == Key::Tab) { accept_completion_(); return TextInputKeyResult::Handled; }
+            if (event.key == Key::Escape) { dismiss_completion_(); dismiss_signature_(); dismiss_hover_(); return TextInputKeyResult::Handled; }
+        }
+        const auto shortcut = shortcuts::resolve(event, shortcuts::Context::Editor);
+        if (event.key == Key::Space && (event.modifiers.control || event.modifiers.meta) && !event.modifiers.alt && !event.modifiers.shift) {
+            schedule_completion_(value);
+            if (changed) changed();
+            return TextInputKeyResult::Handled;
+        }
+        if (shortcut == shortcuts::Command::SelectAll) { auto next = value; next.selection = {0, units(next.text)}; publish_(next); return TextInputKeyResult::Handled; }
+        if (shortcut == shortcuts::Command::Undo || shortcut == shortcuts::Command::Redo) {
+            application->execute({{"command", shortcut == shortcuts::Command::Redo ? "document.redo" : "document.undo"}, {"params", {{"document", document}, {"revision", documentRevision}}}}); refresh_(); if (changed) changed(); return TextInputKeyResult::Handled;
+        }
+        auto next = value; auto endings = line_endings_(); auto selection = next.selection.Range(); auto caret = next.selection.active;
+        bool pendingDismiss {};
+        auto move = [&](TextOffset target) { if (!event.modifiers.shift) next.selection.anchor = target; next.selection.active = target; pendingDismiss = true; };
+        auto previous = [&](TextOffset offset) { if (!offset) return offset; auto byte = byte_at(next.text, offset); --byte; while (byte && (static_cast<unsigned char>(next.text[byte]) & 0xc0) == 0x80) --byte; return units(std::string_view(next.text).substr(0, byte)); };
+        auto following = [&](TextOffset offset) { auto byte = byte_at(next.text, offset); if (byte == next.text.size()) return offset; ++byte; while (byte < next.text.size() && (static_cast<unsigned char>(next.text[byte]) & 0xc0) == 0x80) ++byte; return units(std::string_view(next.text).substr(0, byte)); };
+        if (event.key == Key::ArrowLeft) move(previous(caret));
+        else if (event.key == Key::ArrowRight) move(following(caret));
+        else if (event.key == Key::Home) { auto [row, x] = location_(caret); move(lines[row].unit); }
+        else if (event.key == Key::End) { auto [row, x] = location_(caret); move(lines[row].unit + units(lines[row].text)); }
+        else if (event.key == Key::ArrowUp || event.key == Key::ArrowDown) { auto [row, x] = location_(caret); auto target = event.key == Key::ArrowUp ? (row ? row - 1 : 0) : std::min(row + 1, lines.size() - 1); auto hit = QueryTextInputPosition(input.session_id, {64 + x, 10 + (static_cast<float>(target) - topLine) * lineHeight + 1}); move(hit.position.offset); }
+        else if (event.key == Key::Backspace) replace_(next, selection.IsCollapsed() ? TextRange{previous(caret), caret} : selection, "", endings);
+        else if (event.key == Key::Delete) replace_(next, selection.IsCollapsed() ? TextRange{caret, following(caret)} : selection, "", endings);
+        else if (event.key == Key::Enter) replace_(next, selection, "\n", endings);
+        else if (event.key == Key::Tab) replace_(next, selection, "    ", endings);
+        else return TextInputKeyResult::Unhandled;
+        if (pendingDismiss) { dismiss_completion_(); dismiss_signature_(); dismiss_hover_(); }
+        publish_(next, {}, std::move(endings)); return TextInputKeyResult::Handled;
+    }
+    bool CanPerformTextEditingAction(TextEditingAction action, PlatformClipboard* clipboard) const override {
+        if (value.composition || (format.loneCarriageReturns && (action == TextEditingAction::Cut || action == TextEditingAction::Paste))) return false;
+        if (action == TextEditingAction::SelectAll) return !value.text.empty();
+        return clipboard && (action == TextEditingAction::Paste || !value.selection.IsCollapsed());
+    }
+    bool PerformTextEditingAction(TextEditingAction action, PlatformClipboard* clipboard) override {
+        if (!CanPerformTextEditingAction(action, clipboard)) return false;
+        auto next = value; auto endings = line_endings_();
+        if (action == TextEditingAction::SelectAll) next.selection = {0, units(next.text)};
+        else if (action == TextEditingAction::Paste) {
+            auto text = clipboard->ReadText(); if (!text) return false;
+            replace_(next, next.selection.Range(), *text, endings);
+        } else {
+            auto range = next.selection.Range();
+            auto text = next.text.substr(byte_at(next.text, range.start), byte_at(next.text, range.end) - byte_at(next.text, range.start));
+            if (!clipboard->WriteText(text)) return false;
+            if (action == TextEditingAction::Copy) return true;
+            replace_(next, range, "", endings);
+        }
+        return publish_(next, {}, std::move(endings));
+    }
+    void dismiss_completion_if_caret_moved_() {
+        if (!completionShown()) return;
+        const auto caret = value.selection.active;
+        if (caret < completionPrefixStart || caret > completionPrefixStart + static_cast<TextOffset>(units(completionPrefix))) dismiss_completion_();
+    }
+    bool ClearSelection() override {
+        if (value.selection.IsCollapsed()) return false;
+        auto next = value; next.selection.anchor = next.selection.active; publish_(next); return true;
+    }
+    bool SelectWord(Point point) override {
+        auto hit = QueryTextInputPosition(input.session_id, point);
+        auto byte = byte_at(value.text, hit.position.offset); auto first = byte, last = byte;
+        auto word = [](unsigned char ch) { return std::isalnum(ch) || ch == '_' || ch >= 0x80; };
+        while (first && word(static_cast<unsigned char>(value.text[first - 1]))) --first;
+        while (last < value.text.size() && word(static_cast<unsigned char>(value.text[last]))) ++last;
+        auto next = value; next.selection = {units(std::string_view(value.text).substr(0, first)), units(std::string_view(value.text).substr(0, last))}; publish_(next); return true;
+    }
+    bool ExtendSelection(Point point, bool startHandle) override {
+        auto hit = QueryTextInputPosition(input.session_id, point);
+        auto next = value; auto range = next.selection.Range();
+        next.selection = startHandle ? TextSelection{range.end, std::min(hit.position.offset, range.end)} : TextSelection{range.start, std::max(hit.position.offset, range.start)};
+        publish_(next); return true;
+    }
+    std::optional<TextSelectionGeometry> QuerySelectionGeometry() const override {
+        auto range = value.selection.Range();
+        auto first = QueryTextInputGeometry(input.session_id, {range.start, range.start});
+        auto last = QueryTextInputGeometry(input.session_id, {range.end, range.end});
+        if (first.result_code != TextInputResultCode::Ok || last.result_code != TextInputResultCode::Ok) return TextSelectionGeometry{};
+        return TextSelectionGeometry{first.caret, last.caret, first.caret};
+    }
+    Color SelectionHandleColor() const noexcept override { return Color::Rgb(112, 171, 255); }
+    void EndTextInput(TextInputSessionId session, TextInputEndReason) override { if (session == input.session_id) { input.session_id = 0; value.composition.reset(); baseline.reset(); compositionGroup.clear(); ++input.revision; } }
+};
+namespace {
+struct EditorSurface {
+    class Extension;
+    std::shared_ptr<EditorState::Impl> model;
+    bool operator==(const EditorSurface&) const = default;
+};
+class EditorSurface::Extension : public NodeExtension {
+    std::shared_ptr<EditorState::Impl> model_;
+    ViewNode* node_ {};
+    bool focused_ {};
+    bool dragging_ {};
+public:
+    Extension(ViewNode& node, const EditorSurface& spec) : model_(spec.model), node_(&node) { model_->focusNode = node_; }
+    ~Extension() override { if (model_->focusNode == node_) model_->focusNode = nullptr; }
+    void Update(ViewNode& node, const EditorSurface& spec) {
+        if (model_->focusNode == node_) model_->focusNode = nullptr;
+        model_ = spec.model; node_ = &node; model_->focusNode = node_; InvalidatePaint();
+    }
+    std::shared_ptr<TextInputClient> GetTextInputClient() noexcept override { return model_; }
+    TextSelectionClient* GetTextSelectionClient() noexcept override { return model_.get(); }
+    bool HitTest(ViewNode& node, Point point) const override { return point.x >= 0 && point.y >= 0 && point.x <= node.Bounds().width && point.y <= node.Bounds().height; }
+    void OnFocusChanged(ViewNode&, bool focused, bool) override { focused_ = focused; InvalidatePaint(); }
+    PointerResult OnPointer(ViewNode&, const PointerEvent& event) override {
+        if (event.type == PointerEventType::Down && model_->completionShown()) {
+            const auto box = model_->completionBox_();
+            if (event.position.x >= box.x && event.position.x <= box.x + box.width && event.position.y >= box.y && event.position.y <= box.y + box.height) {
+                auto row = static_cast<std::size_t>(std::clamp((event.position.y - box.y - 2) / 20.0F, 0.0F, 1e9F));
+                const auto count = std::min<std::size_t>(model_->completionMatches.size(), 8);
+                if (row < count) { model_->completionSelected = row; model_->accept_completion_(); InvalidatePaint(); }
+                else model_->dismiss_completion_();
+                return PointerResult::Handled;
+            }
+            model_->dismiss_completion_();
+        }
+        if (event.type == PointerEventType::Down) model_->dismiss_hover_();
+        if (event.type == PointerEventType::Down || (event.type == PointerEventType::Move && dragging_)) {
+            auto hit = model_->QueryTextInputPosition(model_->input.session_id, event.position);
+            auto value = model_->value; if (!dragging_) value.selection.anchor = hit.position.offset; value.selection.active = hit.position.offset;
+            dragging_ = true; model_->publish_(value); InvalidatePaint(); return PointerResult::Capture;
+        }
+        if (event.type == PointerEventType::Up || event.type == PointerEventType::Cancel) { dragging_ = false; return PointerResult::Handled; }
+        return PointerResult::Ignored;
+    }
+    bool HoverHitTest(ViewNode& node, Point position) const override { return position.x >= 0 && position.y >= 0 && position.x <= node.Bounds().width && position.y <= node.Bounds().height; }
+    void OnHover(ViewNode&, const HoverEvent& event) override {
+        if (event.type == HoverEventType::Leave) { model_->dismiss_hover_(); return; }
+        if (!model_->input.session_id) return;
+        model_->request_hover_(event.position, model_->QueryTextInputPosition(model_->input.session_id, event.position).position.offset);
+    }
+    PaintInvalidation PrepareGeometry(ViewNode& node, TextMeasurer& measurer) override {
+        if (model_->focusWhenMounted) { model_->focusWhenMounted = false; node.RequestFocus(); }
+        auto& model = *model_; model.viewport = node.LayoutSize();
+        TextStyle style {.font = Font::Monospace(14), .foreground = Color::Rgb(218, 224, 235)};
+        auto metrics = measurer.Metrics(style.font); model.ascent = metrics.ascent; model.lineHeight = std::max(22.0F, metrics.LineHeight() + 3);
+        auto [row, x] = model.location_(model.value.selection.active);
+        auto visible = static_cast<std::size_t>(std::max(1.0F, std::floor((model.viewport.height - 20) / model.lineHeight)));
+        if (model.revealCaret) {
+            if (row < model.topLine) model.topLine = row;
+            else if (row >= model.topLine + visible) model.topLine = row - visible + 1;
+            model.revealCaret = false;
+        }
+        auto last = std::min(model.lines.size(), model.topLine + visible + 2);
+        for (auto i = model.topLine; i < last; ++i) {
+            auto& line = model.lines[i]; auto& positions = model.positions[i];
+            if (!positions.empty()) continue;
+            positions.push_back({0, 0});
+            auto count = units(line.text);
+            const bool ascii = std::all_of(line.text.begin(), line.text.end(), [](unsigned char c) { return c >= 32 && c < 127; });
+            const float cell = measurer.MeasureRun("M", style).advance;
+            if (ascii) { for (TextOffset column = 1; column <= count; ++column) positions.push_back({column, column * cell}); continue; }
+            for (TextOffset column = 1; column <= count; ++column) {
+                try { auto prefix = AttributedText(line.text).TextInRange({0, column}); positions.push_back({column, measurer.MeasureRun(prefix, style).advance}); } catch (...) {}
+            }
+        }
+        return PaintInvalidation::Both;
+    }
+    void PaintAboveContent(const ViewNode&, PaintContext& context) const override {
+        const auto& model = *model_; auto visible = static_cast<std::size_t>(std::max(1.0F, std::ceil(model.viewport.height / model.lineHeight)));
+        auto last = std::min(model.lines.size(), model.topLine + visible);
+        context.DrawRect({0, 0, model.viewport.width, model.viewport.height}, model.dark ? Color::Rgb(19, 24, 34) : Color::Rgb(250, 252, 255));
+        context.DrawRect({0, 0, 50, model.viewport.height}, model.dark ? Color::Rgb(16, 21, 30) : Color::Rgb(238, 242, 248));
+        for (auto i = model.topLine; i < last; ++i) {
+            const auto& line = model.lines[i]; const auto lineEnd = line.unit + units(line.text);
+            auto x = [&](TextOffset unit) {
+                const auto& positions = model.positions[i]; auto position = std::lower_bound(positions.begin(), positions.end(), unit - line.unit, [](auto item, auto offset) { return item.first < offset; });
+                return position == positions.end() ? (positions.empty() ? 0.0F : positions.back().second) : position->second;
+            };
+            for (const auto& match : model.searchMatches) {
+                if (match.end <= line.unit) continue;
+                if (match.start > lineEnd) break;
+                const auto start = std::max(match.start, line.unit), end = std::min(match.end, lineEnd);
+                if (start < end || (match.start <= lineEnd && match.end > lineEnd)) {
+                    const auto left = x(start), right = start < end ? x(end) : left + 6;
+                    context.DrawRect({64 + left, 10 + (i - model.topLine) * model.lineHeight, std::max(1.0F, right - left), model.lineHeight}, model.dark ? Color::Rgb(58, 45, 18) : Color::Rgb(249, 230, 169));
+                }
+            }
+        }
+        auto geometry = model.QueryTextInputGeometry(model.input.session_id, model.value.selection.Range());
+        for (auto rectangle : geometry.range_rects) context.DrawRect(rectangle, model.dark ? Color::Rgb(31, 49, 76) : Color::Rgb(214, 233, 255));
+        TextStyle style {.font = Font::Monospace(14), .foreground = model.dark ? Color::Rgb(213, 221, 233) : Color::Rgb(35, 47, 65)};
+        for (auto i = model.topLine; i < last; ++i) {
+            auto y = 10 + (i - model.topLine) * model.lineHeight;
+            context.DrawText({8, static_cast<float>(y), 38, model.lineHeight}, std::to_string(i + 1), {.font = Font::Monospace(12), .foreground = Color::Rgb(100, 115, 137)});
+            const auto& text = model.lines[i].text;
+            std::vector<TextStyleRange> ranges;
+            std::size_t byte {}; TextOffset offset {};
+            for (const auto& token : model.syntaxCache.tokens(i)) {
+                offset += units(std::string_view(text).substr(byte, token.start - byte));
+                auto end = offset + units(std::string_view(text).substr(token.start, token.end - token.start));
+                Color color;
+                switch (token.role) {
+                case syntax::Role::Keyword: color = model.dark ? Color::Rgb(197, 157, 255) : Color::Rgb(112, 48, 160); break;
+                case syntax::Role::Comment: color = model.dark ? Color::Rgb(145, 165, 144) : Color::Rgb(66, 112, 62); break;
+                case syntax::Role::String: color = model.dark ? Color::Rgb(226, 176, 139) : Color::Rgb(151, 64, 29); break;
+                case syntax::Role::Emphasis: color = model.dark ? Color::Rgb(228, 185, 243) : Color::Rgb(132, 53, 148); break;
+                case syntax::Role::Code: color = model.dark ? Color::Rgb(226, 176, 139) : Color::Rgb(151, 64, 29); break;
+                case syntax::Role::Number: color = model.dark ? Color::Rgb(151, 210, 188) : Color::Rgb(26, 112, 91); break;
+                case syntax::Role::Key:
+                case syntax::Role::Link:
+                case syntax::Role::Heading:
+                case syntax::Role::Marker:
+                case syntax::Role::Directive: color = model.dark ? Color::Rgb(127, 188, 240) : Color::Rgb(33, 98, 161); break;
+                }
+                ranges.push_back({{offset, end}, {.foreground = color}});
+                offset = end; byte = token.end;
+            }
+            for (const auto& span : model.semanticSpans) {
+                if (span.line != i || span.start >= span.end) continue;
+                std::vector<TextStyleRange> merged; merged.reserve(ranges.size() + 2);
+                for (const auto& range : ranges) {
+                    const auto overlap = std::max(range.range.start, span.start) < std::min(range.range.end, span.end);
+                    if (!overlap) { merged.push_back(range); continue; }
+                    if (range.range.start < span.start) merged.push_back({{range.range.start, span.start}, range.style});
+                    if (range.range.end > span.end) merged.push_back({{span.end, range.range.end}, range.style});
+                }
+                merged.push_back({{span.start, span.end}, {.foreground = model.semantic_color_(span.type, model.dark)}});
+                std::sort(merged.begin(), merged.end(), [](const TextStyleRange& left, const TextStyleRange& right) { return left.range.start < right.range.start; });
+                ranges = std::move(merged);
+            }
+            // One attributed paragraph preserves shaping, selection and UTF-16 geometry.
+            context.DrawText({64, static_cast<float>(y), std::max(0.0F, model.viewport.width - 72), model.lineHeight}, AttributedText::FromRanges(text, std::move(ranges)), style);
+        }
+        if (focused_) context.DrawRect(geometry.caret, Color::Rgb(112, 171, 255));
+        if (model.completionShown()) {
+            const auto box = model.completionBox_();
+            context.DrawRect(box, model.dark ? Color::Rgb(24, 31, 43) : Color::Rgb(255, 255, 255));
+            context.DrawRect({box.x, box.y, box.width, box.height}, model.dark ? Color::Rgb(56, 72, 96) : Color::Rgb(202, 214, 231));
+            context.DrawRect({box.x, box.y + box.height - 1, box.width, 1}, model.dark ? Color::Rgb(56, 72, 96) : Color::Rgb(202, 214, 231));
+            auto row = 0;
+            for (auto index : model.completionMatches) {
+                const auto selected = static_cast<std::size_t>(row) == model.completionSelected;
+                if (selected) context.DrawRect({box.x + 2, box.y + 2 + row * 20.0F, box.width - 4, 20.0F}, model.dark ? Color::Rgb(38, 57, 83) : Color::Rgb(219, 232, 251));
+                context.DrawText({box.x + 10, box.y + 2 + row * 20.0F, box.width - 16, 20.0F}, model.completions[index].label,
+                    {.font = Font::Monospace(13), .foreground = selected ? (model.dark ? Color::Rgb(158, 202, 255) : Color::Rgb(33, 82, 165)) : (model.dark ? Color::Rgb(213, 221, 233) : Color::Rgb(35, 47, 65))});
+                if (++row >= 8) break;
+            }
+        }
+        if (model.hoverActive && !model.hoverText.empty()) {
+            const auto width = std::min(std::max(60.0F, 18.0F + static_cast<float>(model.hoverText.size()) * 8.0F), std::max(60.0F, model.viewport.width - 24.0F));
+            const auto box = Rect {std::clamp(model.hoverPoint.x + 12.0F, 2.0F, std::max(2.0F, model.viewport.width - width - 2.0F)),
+                std::clamp(model.hoverPoint.y - 34.0F, 2.0F, std::max(2.0F, model.viewport.height - 30.0F)), width, 26.0F};
+                        context.DrawRect(box, model.dark ? Color::Rgb(30, 37, 50) : Color::Rgb(255, 253, 246));
+            context.DrawRect({box.x, box.y, box.width, box.height}, model.dark ? Color::Rgb(64, 80, 104) : Color::Rgb(214, 205, 178));
+            context.DrawText({box.x + 9, box.y + 4, box.width - 14, 20.0F}, model.hoverText,
+                {.font = Font::Monospace(13), .foreground = model.dark ? Color::Rgb(222, 229, 240) : Color::Rgb(46, 55, 70)});
+        }
+        if (model.signatureActive && !model.signatureLabel.empty()) {
+            const auto detail = "  param " + std::to_string(model.signatureActiveParameter + 1);
+            const auto width = std::min(24.0F + static_cast<float>(model.signatureLabel.size() + detail.size()) * 8.0F, std::max(120.0F, model.viewport.width - 80.0F));
+            auto [row, x] = model.location_(model.value.selection.active);
+            const auto above = 10.0F + (static_cast<float>(row) - model.topLine) * model.lineHeight - 32.0F;
+            const auto box = Rect {64.0F + x, above < 10.0F ? 10.0F + (static_cast<float>(row) - model.topLine) + 1.0F * model.lineHeight + model.lineHeight : above, width, 28.0F};
+                        context.DrawRect(box, model.dark ? Color::Rgb(26, 33, 45) : Color::Rgb(255, 255, 255));
+            context.DrawRect({box.x, box.y, box.width, box.height}, model.dark ? Color::Rgb(60, 130, 116) : Color::Rgb(88, 164, 148));
+            context.DrawText({box.x + 10, box.y + 5, box.width - 16, 22.0F}, model.signatureLabel,
+                {.font = Font::Monospace(13), .foreground = model.dark ? Color::Rgb(214, 233, 226) : Color::Rgb(24, 68, 58)});
+            context.DrawText({box.x + 10 + static_cast<float>(model.signatureLabel.size()) * 8.0F, box.y + 5, box.width - 16, 22.0F}, detail,
+                {.font = Font::Monospace(13), .foreground = model.dark ? Color::Rgb(150, 168, 186) : Color::Rgb(110, 124, 140)});
+        }
+    }
+};
+}
+EditorState::EditorState(std::shared_ptr<Application> application, std::string document, std::function<void()> changed) : impl_(std::make_shared<Impl>()) { impl_->application = std::move(application); impl_->document = std::move(document); impl_->changed = std::move(changed); impl_->refresh_(); }
+void EditorState::refresh() { impl_->refresh_(); }
+void EditorState::undo() { impl_->application->execute({{"command", "document.undo"}, {"params", {{"document", impl_->document}, {"revision", impl_->documentRevision}}}}); impl_->refresh_(); if (impl_->changed) impl_->changed(); }
+void EditorState::redo() { impl_->application->execute({{"command", "document.redo"}, {"params", {{"document", impl_->document}, {"revision", impl_->documentRevision}}}}); impl_->refresh_(); if (impl_->changed) impl_->changed(); }
+void EditorState::insert(std::string text) { auto next = impl_->value; auto endings = impl_->line_endings_(); impl_->replace_(next, next.selection.Range(), text, endings); impl_->publish_(next, {}, std::move(endings)); }
+std::uint64_t EditorState::revision() const { return impl_->documentRevision; }
+std::pair<std::size_t, std::size_t> EditorState::selection_bytes() const { auto range = impl_->value.selection.Range(); return {byte_at(impl_->value.text, range.start), byte_at(impl_->value.text, range.end)}; }
+bool EditorState::select_match(TextSelection selection, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return false;
+    try { byte_at(impl_->value.text, selection.anchor); byte_at(impl_->value.text, selection.active); } catch (...) { return false; }
+    auto next = impl_->value; next.selection = selection; return impl_->publish_(std::move(next));
+}
+bool EditorState::select_byte_range(std::size_t start, std::size_t end, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return false;
+    try { impl_->presentation.raw_offset(start); impl_->presentation.raw_offset(end); } catch (...) { return false; }
+    return select_match({units(std::string_view(impl_->value.text).substr(0, start)), units(std::string_view(impl_->value.text).substr(0, end))}, revision);
+}
+bool EditorState::select_lsp_range(Position start, Position end, std::uint64_t revision) {
+    impl_->refresh_();
+    if (revision != impl_->documentRevision || std::tie(start.line, start.character) > std::tie(end.line, end.character)) return false;
+    try {
+        const auto& presentation = impl_->presentation;
+        const auto first = presentation.display_offset(utf8_offset_at(presentation.raw_text(), start));
+        const auto last = presentation.display_offset(utf8_offset_at(presentation.raw_text(), end));
+        return first <= last && select_byte_range(first, last, revision);
+    } catch (...) { return false; }
+}
+bool EditorState::request_focus() { return impl_->focusNode && impl_->focusNode->RequestFocus(); }
+void EditorState::focus_when_mounted() {
+    if (impl_->focusNode) { impl_->focusNode->RequestFocus(); return; }
+    impl_->focusWhenMounted = true; if (impl_->changed) impl_->changed();
+}
+Position EditorState::lsp_position() const {
+    return utf8_position_at(impl_->presentation.raw_text(), impl_->presentation.raw_offset(byte_at(impl_->value.text, impl_->value.selection.active)));
+}
+void EditorState::set_completions(std::vector<CompletionItem> items, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return;
+    impl_->completions.clear();
+    for (auto& item : items) impl_->completions.push_back({std::move(item.label), item.insert.empty() ? item.label : std::move(item.insert)});
+    if (impl_->completions.empty()) { impl_->dismiss_completion_(); return; }
+    impl_->refilter_completions_();
+    if (impl_->changed) impl_->changed();
+}
+EditorState::CompletionSnapshot EditorState::completion_snapshot() const {
+    CompletionSnapshot snapshot;
+    snapshot.visible = impl_->completionShown();
+    snapshot.desired = impl_->completionDesired;
+    snapshot.prefix = impl_->completionPrefix;
+    for (std::size_t row = 0; row < impl_->completionMatches.size() && row < 8; ++row) snapshot.items.push_back(impl_->completions[impl_->completionMatches[row]].label);
+    snapshot.selected = impl_->completionSelected;
+    return snapshot;
+}
+void EditorState::dismiss_completion() { impl_->dismiss_completion_(); }
+void EditorState::set_hover_driver(std::function<void()> driver) { impl_->hoverRequested = std::move(driver); }
+void EditorState::set_hover(std::string text) {
+    if (text.empty()) { impl_->dismiss_hover_(); return; }
+    if (impl_->hoverText == text && impl_->hoverActive) return;
+    impl_->hoverText = std::move(text); impl_->hoverActive = true;
+    if (impl_->changed) impl_->changed();
+}
+void EditorState::dismiss_hover() { impl_->dismiss_hover_(); }
+EditorState::HoverSnapshot EditorState::hover_snapshot() const {
+    HoverSnapshot snapshot;
+    snapshot.visible = impl_->hoverActive && !impl_->hoverText.empty();
+    snapshot.desired = impl_->hoverDesired;
+    snapshot.text = impl_->hoverText;
+    snapshot.position = impl_->hoverPosition;
+    return snapshot;
+}
+void EditorState::set_signature(std::string label, std::size_t activeParameter, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return;
+    if (label.empty()) { impl_->dismiss_signature_(); return; }
+    if (impl_->signatureLabel == label && impl_->signatureActiveParameter == activeParameter && impl_->signatureActive) return;
+    impl_->signatureLabel = std::move(label); impl_->signatureActiveParameter = activeParameter; impl_->signatureActive = true;
+    if (impl_->changed) impl_->changed();
+}
+void EditorState::dismiss_signature() { impl_->dismiss_signature_(); }
+EditorState::SignatureSnapshot EditorState::signature_snapshot() const {
+    SignatureSnapshot snapshot;
+    snapshot.visible = impl_->signatureActive && !impl_->signatureLabel.empty();
+    snapshot.desired = impl_->signatureDesired;
+    snapshot.label = impl_->signatureLabel;
+    snapshot.activeParameter = impl_->signatureActiveParameter;
+    return snapshot;
+}
+bool EditorState::completion_visible() const { return impl_->completionShown(); }
+bool EditorState::set_search_results(std::vector<TextRange> matches, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return false;
+    TextOffset end {};
+    try { for (auto range : matches) { if (range.start < end || range.end <= range.start) return false; byte_at(impl_->value.text, range.start); byte_at(impl_->value.text, range.end); end = range.end; } } catch (...) { return false; }
+    impl_->searchMatches = std::move(matches); if (impl_->changed) impl_->changed(); return true;
+}
+void EditorState::clear_search_results() { impl_->searchMatches.clear(); if (impl_->changed) impl_->changed(); }
+TextFormat EditorState::text_format() const { return impl_->format; }
+std::string EditorState::language_id() const { return std::string(syntax::language_name(impl_->language)); }
+bool EditorState::highlighting_limited() const { return impl_->syntaxCache.limited(); }
+std::string EditorState::document_id() const { return impl_->document; }
+std::string EditorState::document_path() const { return impl_->documentPath; }
+TextSelection EditorState::selection() const { return impl_->value.selection; }
+std::shared_ptr<TextInputClient> EditorState::text_input_client() const { return impl_; }
+View code_editor(std::shared_ptr<EditorState> state, bool dark) {
+    state->impl_->dark = dark;
+    return Canvas([](PaintContext&, Size) {}).Key("code-editor").With(Grow{1}, Frame{.min_width = 120, .min_height = 160}, Focusable{}, PointerCursor{PointerCursorKind::Text}, ClipChildren{}, EditorSurface{state->impl_})
+        .On<ViewEvents::ScrollInput>([state](const ScrollInputEvent& event) {
+            auto& model = *state->impl_;
+            auto row = static_cast<std::int64_t>(model.topLine) + static_cast<std::int64_t>(std::round(event.delta_y / model.lineHeight));
+            model.topLine = static_cast<std::size_t>(std::clamp<std::int64_t>(row, 0, model.lines.size() - 1));
+            model.revealCaret = false;
+            if (model.changed) model.changed();
+            return true;
+        });
+}
+void EditorState::set_semantic_tokens(std::vector<SemanticToken> tokens, std::uint64_t revision) {
+    if (revision != impl_->documentRevision) return;
+    impl_->semanticSpans.clear();
+    for (auto& token : tokens) impl_->semanticSpans.push_back({token.line, static_cast<TextOffset>(token.start), static_cast<TextOffset>(token.end), token.type});
+    if (impl_->changed) impl_->changed();
+}
+void EditorState::request_semantic_tokens() { ++impl_->semanticDesired; if (impl_->changed) impl_->changed(); }
+EditorState::SemanticSnapshot EditorState::semantic_snapshot() const {
+    SemanticSnapshot snapshot;
+    snapshot.visible = !impl_->semanticSpans.empty();
+    snapshot.desired = impl_->semanticDesired;
+    return snapshot;
+}
+}
